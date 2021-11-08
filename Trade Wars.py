@@ -76,18 +76,24 @@ class Player:
             self.move_sectors(dest)
 
         elif action[0] == "c":
+
             print("Current Cargo Manifest")
+
             for key, quantity in self.cargo.items():
                 print(f"{key}: {quantity}")
+            time.sleep(.5)
+            map[self.current_sector].load_sector(False)
 
         elif action.isdigit():  # Used for entering Ports or Planets
 
             action = int(action)
 
-            sector_obj = map[self.current_sector]
-            sector_obj.ports[action].enter_port(self)
-
-            sector_obj.load_sector()
+            try:
+                sector_obj = map[self.current_sector]
+                sector_obj.ports[action].enter_port(self)
+                sector_obj.load_sector(True)
+            except KeyError:
+                pass
 
     def move_sectors(self, destination=None):
 
@@ -112,12 +118,12 @@ class Player:
 
         if end == 0:
             # Replace this with re-display sector !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            map[self.current_sector].load_sector()
+            map[self.current_sector].load_sector(False)
             return
 
         elif 1 <= end <= total_sectors:
 
-            sectors_to_load = create_path(start, end, map)
+            sectors_to_load = dijkstra_path(start, end, map)
 
             #print('Lowest Cost: ' + str(data[end_point]['cost']))
 
@@ -142,7 +148,7 @@ class Player:
 
                     self.current_sector = sector
 
-                    map[sector].load_sector()
+                    map[sector].load_sector(True)
 
                     if final_sector == True:
                         print(f'\nFuel remaining: {self.fuel:,}\n')
@@ -189,14 +195,16 @@ class Sector:
         else:
             self.connected_sectors = connected_sectors
 
-    def load_sector(self):
+    def load_sector(self, load_events):
 
-        print(f'\n[\t\tSector:\t{self.sector}\t\t]\n')
+        # load events will be used for hazard / deployable interaction
 
         nearby_sectors = " - ".join(
             [str(element) for element in list(map[self.sector].connected_sectors.keys())])
 
         print('[Nearby Warps] : ' + nearby_sectors + '\n')
+
+        print(f'Current Sector : {self.sector}\n')
 
         if len(self.ports) > 0:
 
@@ -208,7 +216,7 @@ class Sector:
 
     def generate_connecting_sectors(self):
 
-        total_connecting_sectors = random.randrange(4, 10)
+        total_connecting_sectors = random.randrange(2, 4)
 
         connected_sectors = {}
 
@@ -261,15 +269,22 @@ class TradePort:
         quantities = [(30_000, 150_000), (40_000, 200_000),
                       (60_000, 100_000), (10_000, 45_000), (5_000, 10_000)]
 
-        prices = ((1000, 200), (2000, 100),
-                  (500, 1000), (15000, 10), (800, 4000))
+        if not update_only_prices:
+            self.price_random = ((1000, random.randint(200, 300)), (2000, random.randint(100, 200)),
+                                 (500, random.randint(978, 1500)), (15000, random.randint(9, 12)), (800, random.randint(3000, 4000)))
 
-        for item, amount, price in zip(info.values(), quantities, prices):
+        for item, amount, price in zip(info.values(), quantities, self.price_random):
+
             if not update_only_prices:
                 item['Quantity'] = random.randint(*amount)
                 item['Status'] = random.choice(("Buying", "Selling"))
 
-            item["Price"] = round(item['Quantity']/price[0] + price[1], 3)
+            if item['Status'] == "Selling":
+                # Higher prices with smaller WTS
+                item["Price"] = round(price[1] - item['Quantity']/price[0], 3)
+            else:
+                # Lower Prices with smaller WTB
+                item["Price"] = round(item['Quantity']/price[0] + price[1], 3)
 
         return info
 
@@ -478,9 +493,70 @@ class TradePort:
         self.credits += 300_000
 
 
-def create_path(start_point, end_point, map):
+def join_all_sectors(current_map, total_sectors):
     '''
-        Dijkstra's algorithm used to find shortest fuel cost path 
+    Use Depth First Search algorithm to ensure all sectors are connected
+    '''
+    map_partitions = {}
+    # Start with Sector 1
+
+    visited = []
+
+    partition_count = 0
+
+    for sector_num in range(1, total_sectors+1):
+
+        if not sector_num in visited:  # visited[sector_num-1] == False:
+
+            partition_count += 1
+
+            visited.append(sector_num)
+            map_partition = [sector_num]
+
+            map_partitions[partition_count] = dfs(
+                current_map, sector_num, visited, map_partition)
+
+    if len(map_partitions) > 1:
+        # Return the key for the largest section of the map
+        largest_section = sorted(
+            map_partitions, key=lambda x: len(map_partitions[x]))[-1]
+
+        for key, section in map_partitions.items():
+
+            if key != largest_section:
+
+                for _ in range(5):
+
+                    # Choose a random sector to link to from the primary map
+                    entry_sector = random.choice(
+                        map_partitions[largest_section])
+                    linked_sector = random.choice(section)
+
+                    current_map[entry_sector].connected_sectors[linked_sector] = 1
+                    current_map[linked_sector].connected_sectors[entry_sector] = 1
+
+    return current_map
+
+
+def dfs(current_map, start_point, visited, current_section):
+    '''
+    Depth First Search to find connected sectors [Recursive Function]
+    '''
+    for connected_sector in current_map[start_point].connected_sectors:
+
+        if not connected_sector in visited:
+
+            visited.append(connected_sector)
+            current_section.append(connected_sector)
+            current_section = dfs(
+                current_map, connected_sector, visited, current_section)
+
+    return current_section
+
+
+def dijkstra_path(start_point, end_point, map):
+    '''
+    Dijkstra's algorithm used to find shortest fuel cost path 
     '''
 
     data = {key: np.inf for key in map}
@@ -498,7 +574,7 @@ def create_path(start_point, end_point, map):
         minNode = None
 
         for node in n_map:
-            # Determine which of the connected nodes have the lowest cost ...initializes to start_point
+            # Determine which of the nodes have the lowest path cost ... initializes to start_point
             if minNode == None:
                 minNode = node
             elif data[node] < data[minNode]:
@@ -507,8 +583,10 @@ def create_path(start_point, end_point, map):
         # Loop connected nodes and adjust costs to each one
         for childNode, cost in n_map[minNode].items():
 
+            # Cost to get to the parent node + cost to get to the child
             path_cost = cost + data[minNode]
 
+            # If a more optimal path is found or child is tested for the first time
             if path_cost < data[childNode]:
 
                 data[childNode] = path_cost
@@ -550,8 +628,13 @@ def generate_map(total_sectors=100):
 
     for current_sector in range(1, total_sectors+1):
 
+        # Create Sector objects
+        # Each sector originally connects to 2 to 4 other sectors
         map[current_sector] = Sector(current_sector)
 
+    # Ensure that every sector is reachable
+    map = join_all_sectors(map, total_sectors)
+    # Enable Bi-directional sector travel unil further updates
     map = bi_directional_sectors(map)
 
     return map
@@ -564,7 +647,7 @@ if __name__ == "__main__":
 
     user = Player("Reshui", 500, 1_000_000)
 
-    map[user.current_sector].load_sector()
+    map[user.current_sector].load_sector(False)
 
     while True:
 
