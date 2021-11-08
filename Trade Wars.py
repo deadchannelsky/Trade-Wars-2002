@@ -1,20 +1,41 @@
 import random
 import numpy as np
-#import copy
+from enum import Enum
 import time
+#import threading
+#import socket
 
 prompt_breaker = "____________________________________________________________________"
 
 
+class Action(Enum):
+    previous_menu = 0
+    buy = 1
+    sell = 2
+
+
+class Deployable:
+    pass
+
+
 class Player:
 
-    def __init__(self, current_sector, credits=20_000, cargo_holds=3_000, turns_remaining=10_000):
+    def __init__(self, name, current_sector, credits=20_000, cargo_holds=3_000,
+                 turns_remaining=10_000, score=0,
+                 cargo={'Ore': 0, "Organics": 0, "Equipment": 0,
+                        'Armor': 0, "Batteries": 0},
+                 deployables={'Limpets': {}, "Mines": {}, "Planet Crackers": {}, "Planet Accumulators": {},
+                              "Warp Disruptors": {}}):
+
+        self.username = name
         self.current_sector = current_sector
         self.credits = credits
         self.cargo_holds = cargo_holds
-        self.cargo = {'Ore': 0, "Organics": 0, "Equipment": 0, 'Armor': 0}
+        self.cargo = cargo
         self.fuel = turns_remaining
-        self.warping = False
+        self.warping = False  # Used to mitigate fighter response to a sector
+        self.score = score
+        self.deployables = deployables
 
     def holds_available(self):
 
@@ -32,7 +53,10 @@ class Player:
 
         print(prompt_breaker)
 
-        if action[0] == 'm':
+        if action == "":
+            pass
+
+        elif action[0] == 'm':
 
             if len(action) > 1:
                 dest = action[1:].replace(" ", "")
@@ -51,7 +75,12 @@ class Player:
 
             self.move_sectors(dest)
 
-        elif action.isdigit():
+        elif action[0] == "c":
+            print("Current Cargo Manifest")
+            for key, quantity in self.cargo.items():
+                print(f"{key}: {quantity}")
+
+        elif action.isdigit():  # Used for entering Ports or Planets
 
             action = int(action)
 
@@ -82,7 +111,10 @@ class Player:
                 break
 
         if end == 0:
+            # Replace this with re-display sector !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            map[self.current_sector].load_sector()
             return
+
         elif 1 <= end <= total_sectors:
 
             sectors_to_load = create_path(start, end, map)
@@ -92,14 +124,19 @@ class Player:
             print('Path: ' + " > ".join([str(element)
                                         for element in [self.current_sector] + sectors_to_load]))
 
+            print(prompt_breaker)
+
+            self.warping = True
+
             for sector in sectors_to_load:
 
                 final_sector = True if sector == end else False
 
                 if self.fuel-map[self.current_sector].connected_sectors[sector] > 0:
 
-                    time.sleep(1)
+                    time.sleep(.4)
                    # Subtract the cost to travel to the sector
+
                     self.fuel -= \
                         map[self.current_sector].connected_sectors[sector]
 
@@ -107,12 +144,14 @@ class Player:
 
                     map[sector].load_sector()
 
+                    if final_sector == True:
+                        print(f'\nFuel remaining: {self.fuel:,}\n')
+
                 else:
                     print("Not enough Fuel.")
                     break
 
-                if final_sector == True:
-                    print(f'Fuel remaining: {self.fuel}\n')
+                self.warping = False
 
         else:
             print("Input a valid number.")
@@ -131,14 +170,17 @@ class Planet:
 
 class Sector:
 
-    def __init__(self, sector_number, ports_in_sector=None, connected_sectors=None, fighters_in_sector=0, planets_in_sector=0):
+    def __init__(self, sector_number, ports_in_sector=None, connected_sectors=None, fighters_in_sector=0, planets_in_sector=0, debris_percent=0):
 
         self.fighters_in_sector = fighters_in_sector
         self.sector = sector_number
         self.planets_in_sector = planets_in_sector
+        self.debirs_percent = debris_percent
 
         if ports_in_sector == None and sector_number != 1:
             self.ports = self.generate_ports()
+        elif sector_number == 1:
+            self.ports = {}
         else:
             self.ports = ports_in_sector
 
@@ -151,13 +193,16 @@ class Sector:
 
         print(f'\n[\t\tSector:\t{self.sector}\t\t]\n')
 
-        try:
-            if len(self.ports) > 0:
+        nearby_sectors = " - ".join(
+            [str(element) for element in list(map[self.sector].connected_sectors.keys())])
 
-                for num, port in enumerate(self.ports.values()):
-                    print(f'({num+1}) {port.name}')
-        except:
-            print("Hello")
+        print('[Nearby Warps] : ' + nearby_sectors + '\n')
+
+        if len(self.ports) > 0:
+
+            # Print the ports in the sector
+            for num, port in enumerate(self.ports.values()):
+                print(f'({num+1}) {port.name}')
 
         print(prompt_breaker)
 
@@ -183,7 +228,7 @@ class Sector:
 
         sector_ports = {}
 
-        ports_in_system = random.randint(1, 3)
+        ports_in_system = random.randint(1, 2)
 
         if ports_in_system > 0:
 
@@ -200,61 +245,75 @@ class TradePort:
         self.sector = sector
         self.name = 'Trading Port {} ~ {}'.format(sector, port_number)
         # Fuel for ship/Planetary shields
-        self.credits = random.randint(2_510_000, 9_700_000)
-        self.inventory = self.generate_info()
+        self.credits = random.randint(20_510_000, 90_700_000)
+        self.inventory = self.generate_info(False)
 
-    def generate_info(self):
+    def generate_info(self, update_only_prices=False):
 
-        info = {}
+        if not update_only_prices:
+            info = {}
 
-        for field in ["Ore", "Organics", "Armor", "Batteries", "Equipment"]:
-            info[field] = {}
+            for field in ["Ore", "Organics", "Armor", "Batteries", "Equipment"]:
+                info[field] = {}
+        else:
+            info = self.inventory
 
-        info['Ore']['Quantity'] = random.randint(30_000, 150_000)
-        info['Organics']['Quantity'] = random.randint(
-            40_000, 200_000)      # Food
-        info['Armor']['Quantity'] = random.randint(
-            10_000, 30_000)         # Hull Points
-        info['Batteries']['Quantity'] = random.randint(
-            60_000, 100_000)     # Ammo
-        info['Equipment']['Quantity'] = random.randint(
-            10_000, 45_000)     # General cargo
+        quantities = [(30_000, 150_000), (40_000, 200_000),
+                      (60_000, 100_000), (10_000, 45_000), (5_000, 10_000)]
 
-        return self.generate_prices(info)
+        prices = ((1000, 200), (2000, 100),
+                  (500, 1000), (15000, 10), (800, 4000))
+
+        for item, amount, price in zip(info.values(), quantities, prices):
+            if not update_only_prices:
+                item['Quantity'] = random.randint(*amount)
+                item['Status'] = random.choice(("Buying", "Selling"))
+
+            item["Price"] = round(item['Quantity']/price[0] + price[1], 3)
+
+        return info
 
     def enter_port(self, player):
 
         while True:
-
-            self.inventory = self.generate_prices(self.inventory)
+            # Update Prices if needed
+            self.inventory = self.generate_info(True)
 
             # Print Quantities of items and there Buy/Sell price
             print(
-                f"Current Inventory\t\tAvailable Credits: {player.credits}")
+                f"\nPort Funds: {self.credits:,}\nYour Balance: {player.credits:,}")
 
-            print(prompt_breaker)
+            print(prompt_breaker + '\n')
 
             for item, cargo in self.inventory.items():
                 # Print the ports current inventory and corresponding
                 # Prices to the screen
 
-                printed_string = f'{item} : {cargo["Quantity"]}'
-
-                if len(printed_string) <= 15:
-                    tabs = "\t\t\t"
+                if len(item) <= 5:
+                    tabs = '\t'
                 else:
-                    tabs = "\t\t"
+                    tabs = ""
 
-                print(f'{printed_string}{tabs}Price: {cargo["Price"]}')
+                printed_string = f'{item}{tabs}'
+
+                print(
+                    f'{printed_string}\t{cargo["Status"]}\t\t{cargo["Quantity"]:,}\t\t    $ {cargo["Price"]:,}')
 
             print(prompt_breaker)
 
-            user_selection = int(
-                input("Select an option: (1) Buy from Port | (2) Sell to Port | (0) Exit port: \t"))
+            while True:
+                try:
+                    user_selection = int(
+                        input("Select an option: (1) Buy from Port | (2) Sell to Port | (0) Exit port:   "))
+                    if user_selection in range(0, 3):
+                        break
+                except:
+                    pass
+                print("Input a number 0-2 ")
 
             print(prompt_breaker + "\n")
 
-            if user_selection == 2:
+            if user_selection == Action.sell.value:
 
                 try:
                     item, quantity = self.buy_sell_prompt(False, player)
@@ -264,7 +323,7 @@ class TradePort:
 
                 self.sell_to_port(quantity, item, player)
 
-            elif user_selection == 1:
+            elif user_selection == Action.buy.value:
 
                 try:
                     item, quantity = self.buy_sell_prompt(True, player)
@@ -274,7 +333,7 @@ class TradePort:
 
                 self.buy_from_port(quantity, item, player)
 
-            elif user_selection == 0:
+            elif user_selection == Action.previous_menu.value:
 
                 break
 
@@ -287,29 +346,42 @@ class TradePort:
 
         sell_or_buy = "buy" if buying == True else "sell"
 
-        for num, key in enumerate(self.inventory):
+        available_for_purchase = []
 
-            if num == 0:
-                tabs = "\t" * 4
-            else:
-                tabs = "\t"*3
+        for key in self.inventory:
 
-            item_quantity_in_holds = player.cargo.setdefault(key, 0)
+            if buying and self.inventory[key]["Status"] == "Selling" or not buying and self.inventory[key]["Status"] == "Buying":
 
-            print(f'{num + 1} - {key}{tabs}On ship: {item_quantity_in_holds}')
+                available_for_purchase.append(key)
+
+                tabs = "\t\t"
+
+                if len(key) <= 3:
+                    tabs += '\t'
+
+                item_quantity_in_holds = player.cargo.setdefault(key, 0)
+
+                print(
+                    f'{len(available_for_purchase)} - {key}{tabs}On ship: {item_quantity_in_holds:,}')
+
+        if len(available_for_purchase) == 0:
+            print("Nothing available for your current selection.")
+            time.sleep(.5)
+            return
 
         print("\n0 - Exit Menu\n")
+
         print(prompt_breaker)
 
         selection = int(input(f"What would you like to {sell_or_buy}?\t"))
 
-        if selection == 0:
+        if selection == Action.previous_menu.value:
             return
         else:
 
             print(prompt_breaker)
             # String representing the commodity chosen
-            commodity = list(self.inventory.keys())[selection - 1]
+            commodity = available_for_purchase[selection-1]
 
             commodity_price = self.inventory[commodity]['Price']
 
@@ -331,7 +403,7 @@ class TradePort:
                 try:
                     #print("Press 0 to return to the previous menu")
                     print(
-                        f'{commodity} units available for purchase: {available_units}')
+                        f'{commodity} units available for purchase: {available_units:,}')
 
                     quantity = int(
                         input(f"\nHow many units would you like to {sell_or_buy}? \t"))
@@ -341,16 +413,16 @@ class TradePort:
                     sign = "-" if buying == True else"+"
 
                     print(
-                        f'\nCurrent Balance: {player.credits} || New Balance: {player.credits + (-1* transaction_cost if buying else transaction_cost) } || Change: {sign} {transaction_cost}\n')
+                        f'\nCurrent Balance: {player.credits:,} || New Balance: {player.credits + (-1* transaction_cost if buying else transaction_cost) :,} || Change: {sign} {transaction_cost:,}\n')
 
                     selection = input(
-                        "Press Enter to confirm or 0 to cancel transaction.")
+                        "Press [Enter] to confirm or [0] to cancel transaction.")
 
                     if selection == "":
 
                         if quantity in range(0, available_units+1):
 
-                            if quantity == 0:
+                            if quantity == Action.previous_menu.value:
                                 return
                             else:
                                 break
@@ -371,7 +443,10 @@ class TradePort:
         transaction_cost = quantity * commodity['Price']
 
         if transaction_cost <= self.credits:
-            commodity["Quantity"] += quantity
+
+            # Port is no longer Selling that amount
+            commodity["Quantity"] -= quantity
+
             player.cargo[item] -= quantity
             self.credits -= transaction_cost
             player.credits += transaction_cost
@@ -402,32 +477,15 @@ class TradePort:
         self.batteries += 10_000
         self.credits += 300_000
 
-    def generate_prices(self, info):
-
-        info["Ore"]["Price"] = info['Ore']['Quantity']/1000 + 200
-
-        info["Organics"]["Price"] = info['Organics']['Quantity']/2000 + 100
-
-        info["Equipment"]["Price"] = info['Equipment']['Quantity'] / 500 + 1000
-
-        info["Armor"]["Price"] = info['Armor']['Quantity'] / 800 + 4000
-
-        info["Batteries"]["Price"] = info['Batteries']['Quantity'] / 15000 + 10
-
-        for value in info.values():
-            value["Price"] = round(value["Price"], 3)
-
-        return info
-
 
 def create_path(start_point, end_point, map):
     '''
         Dijkstra's algorithm used to find shortest fuel cost path 
     '''
 
-    data = {key: {'cost': np.inf} for key in map}
+    data = {key: np.inf for key in map}
 
-    data[start_point]['cost'] = 0
+    data[start_point] = 0
 
     path = []
 
@@ -435,7 +493,7 @@ def create_path(start_point, end_point, map):
 
     n_map = {sector: map[sector].connected_sectors.copy() for sector in map}
 
-    while n_map:  # While there are still items in map
+    while n_map:  # While there are still nodes to visit
 
         minNode = None
 
@@ -443,17 +501,17 @@ def create_path(start_point, end_point, map):
             # Determine which of the connected nodes have the lowest cost ...initializes to start_point
             if minNode == None:
                 minNode = node
-            elif data[node]['cost'] < data[minNode]['cost']:
+            elif data[node] < data[minNode]:
                 minNode = node
 
         # Loop connected nodes and adjust costs to each one
         for childNode, cost in n_map[minNode].items():
 
-            path_cost = cost + data[minNode]['cost']
+            path_cost = cost + data[minNode]
 
-            if path_cost < data[childNode]['cost']:
+            if path_cost < data[childNode]:
 
-                data[childNode]['cost'] = path_cost
+                data[childNode] = path_cost
                 predecessor[childNode] = minNode
 
         n_map.pop(minNode)  # Remove the visited Node
@@ -469,7 +527,7 @@ def create_path(start_point, end_point, map):
             print("Path not reachable")
             break
 
-    if data[end_point]['cost'] != np.inf:   # If the endpoint is reachable
+    if data[end_point] != np.inf:   # If the endpoint is reachable
         return path
     else:
         return []
@@ -504,7 +562,7 @@ if __name__ == "__main__":
     total_sectors = 1000
     map = generate_map(total_sectors)
 
-    user = Player(500, 1_000_000)
+    user = Player("Reshui", 500, 1_000_000)
 
     map[user.current_sector].load_sector()
 
