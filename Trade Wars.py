@@ -5,7 +5,7 @@ import time
 #import threading
 #import socket
 
-prompt_breaker = "____________________________________________________________________"
+prompt_breaker = "============================================================================"
 
 
 class Action(Enum):
@@ -22,8 +22,8 @@ class Player:
 
     def __init__(self, name, current_sector, credits=20_000, cargo_holds=3_000,
                  turns_remaining=10_000, score=0,
-                 cargo={'Ore': 0, "Organics": 0, "Equipment": 0,
-                        'Armor': 0, "Batteries": 0},
+                 cargo={'Ore': [], "Organics": [], "Equipment": [],
+                        'Armor': [], "Batteries": []},
                  deployables={'Limpets': {}, "Mines": {}, "Planet Crackers": {}, "Planet Accumulators": {},
                               "Warp Disruptors": {}}):
 
@@ -40,8 +40,12 @@ class Player:
     def holds_available(self):
 
         holds_used = 0
+
         for value in self.cargo.values():
-            holds_used += value
+            try:
+                holds_used += value[0]
+            except:
+                pass
 
         return self.cargo_holds-holds_used
 
@@ -82,7 +86,8 @@ class Player:
             for key, quantity in self.cargo.items():
                 print(f"{key}: {quantity}")
             time.sleep(.5)
-            map[self.current_sector].load_sector(False)
+            map[self.current_sector].load_sector(
+                self, currently_warping=False, process_events=False)
 
         elif action.isdigit():  # Used for entering Ports or Planets
 
@@ -91,7 +96,8 @@ class Player:
             try:
                 sector_obj = map[self.current_sector]
                 sector_obj.ports[action].enter_port(self)
-                sector_obj.load_sector(True)
+                sector_obj.load_sector(
+                    self, currently_warping=True, process_events=True)
             except KeyError:
                 pass
 
@@ -118,12 +124,16 @@ class Player:
 
         if end == 0:
             # Replace this with re-display sector !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            map[self.current_sector].load_sector(False)
+            map[self.current_sector].load_sector(
+                self, currently_warping=False, process_events=False)
             return
 
         elif 1 <= end <= total_sectors:
 
-            sectors_to_load = dijkstra_path(start, end, map)
+            if not end in map[self.current_sector].connected_sectors:
+                sectors_to_load = dijkstra_path(start, end, map)
+            else:
+                sectors_to_load = [end]
 
             #print('Lowest Cost: ' + str(data[end_point]['cost']))
 
@@ -132,11 +142,7 @@ class Player:
 
             print(prompt_breaker)
 
-            self.warping = True
-
             for sector in sectors_to_load:
-
-                final_sector = True if sector == end else False
 
                 if self.fuel-map[self.current_sector].connected_sectors[sector] > 0:
 
@@ -148,16 +154,12 @@ class Player:
 
                     self.current_sector = sector
 
-                    map[sector].load_sector(True)
-
-                    if final_sector == True:
-                        print(f'\nFuel remaining: {self.fuel:,}\n')
+                    map[sector].load_sector(
+                        self, currently_warping=True, process_events=True)
 
                 else:
                     print("Not enough Fuel.")
                     break
-
-                self.warping = False
 
         else:
             print("Input a valid number.")
@@ -195,7 +197,7 @@ class Sector:
         else:
             self.connected_sectors = connected_sectors
 
-    def load_sector(self, load_events):
+    def load_sector(self, player, currently_warping, process_events):
 
         # load events will be used for hazard / deployable interaction
 
@@ -204,7 +206,8 @@ class Sector:
 
         print('[Nearby Warps] : ' + nearby_sectors + '\n')
 
-        print(f'Current Sector : {self.sector}\n')
+        print(f'Current Sector : {self.sector}')
+        print(f'Fuel remaining: {player.fuel:,}\n')
 
         if len(self.ports) > 0:
 
@@ -367,116 +370,180 @@ class TradePort:
 
             if buying and self.inventory[key]["Status"] == "Selling" or not buying and self.inventory[key]["Status"] == "Buying":
 
-                available_for_purchase.append(key)
-
                 tabs = "\t\t"
 
                 if len(key) <= 3:
                     tabs += '\t'
 
-                item_quantity_in_holds = player.cargo.setdefault(key, 0)
+                item_quantity_in_holds = sum(
+                    [x[0] for x in player.cargo[key]])
+
+                if item_quantity_in_holds > 0:
+                    avg_price = np.average([x[1]
+                                            for x in player.cargo[key]])
+                else:
+                    avg_price = 0
+
+                if item_quantity_in_holds == 0 and not buying:
+                    continue
+                elif item_quantity_in_holds > 0:
+                    average_bought_string = f'\tAverage Price: {avg_price}'
+                else:
+                    average_bought_string = ""
+
+                if len(str(self.inventory[key]["Price"])) == 8:
+                    tabs2 = "\t"
+                else:
+                    tabs2 = "\t\t"
+
+                available_for_purchase.append(key)
 
                 print(
-                    f'{len(available_for_purchase)} - {key}{tabs}On ship: {item_quantity_in_holds:,}')
+                    f'{len(available_for_purchase)} - {key}{tabs}{self.inventory[key]["Price"]}{tabs2}On ship: {item_quantity_in_holds:,}\t{average_bought_string}')
 
-        if len(available_for_purchase) == 0:
-            print("Nothing available for your current selection.")
-            time.sleep(.5)
-            return
+        if len(available_for_purchase) == 0:  # Check if any possible trades are available
 
-        print("\n0 - Exit Menu\n")
+            items_on_ship = player.holds_available() != player.cargo_holds
 
-        print(prompt_breaker)
+            if not buying:
 
-        selection = int(input(f"What would you like to {sell_or_buy}?\t"))
-
-        if selection == Action.previous_menu.value:
-            return
-        else:
-
-            print(prompt_breaker)
-            # String representing the commodity chosen
-            commodity = available_for_purchase[selection-1]
-
-            commodity_price = self.inventory[commodity]['Price']
-
-            if buying:
-
-                player_can_afford = int(player.credits/commodity_price)
-
-                available_units = min(player.holds_available(
-                ), player_can_afford, self.inventory[commodity]['Quantity'])
-
+                if items_on_ship:
+                    print(
+                        "Nothing in your inventory is available to be sold at this time.")
+                else:
+                    print("You don't have any cargo on your ship.")
             else:
+                if items_on_ship:
+                    print("Nothing available for purchase at this time")
 
-                port_can_afford = int(self.credits/commodity_price)
+            time.sleep(1.5)
 
-                available_units = min(player.cargo[commodity], port_can_afford)
+            return
+
+        else:
+            print("\n0 - Exit Menu\n")
+            print(prompt_breaker)
 
             while True:
-
                 try:
-                    #print("Press 0 to return to the previous menu")
-                    print(
-                        f'{commodity} units available for purchase: {available_units:,}')
+                    selection = int(
+                        input(f"What would you like to {sell_or_buy}?\t"))
 
-                    quantity = int(
-                        input(f"\nHow many units would you like to {sell_or_buy}? \t"))
-
-                    transaction_cost = commodity_price * quantity
-
-                    sign = "-" if buying == True else"+"
-
-                    print(
-                        f'\nCurrent Balance: {player.credits:,} || New Balance: {player.credits + (-1* transaction_cost if buying else transaction_cost) :,} || Change: {sign} {transaction_cost:,}\n')
-
-                    selection = input(
-                        "Press [Enter] to confirm or [0] to cancel transaction.")
-
-                    if selection == "":
-
-                        if quantity in range(0, available_units+1):
-
-                            if quantity == Action.previous_menu.value:
-                                return
-                            else:
-                                break
-                        else:
-                            print(
-                                "Please input a number less than or equal to the number of holds available.")
+                    if selection in range(len(available_for_purchase)+1):
+                        break
                     else:
-                        return
-                except:
-                    print("Please input a number.")
+                        print(
+                            f"\nInput a number 0 - {len(available_for_purchase)}\n")
+                except ValueError:
+                    print("Input a number")
 
-            return commodity, quantity
+            if selection == Action.previous_menu.value:
+                return
+            else:
 
-    def sell_to_port(self, quantity, item, player):
+                print(prompt_breaker)
+                # String representing the commodity chosen
+                commodity = available_for_purchase[selection-1]
+
+                commodity_price = self.inventory[commodity]['Price']
+
+                if buying:
+
+                    player_can_afford = int(player.credits/commodity_price)
+
+                    available_units = min(player.holds_available(
+                    ), player_can_afford, self.inventory[commodity]['Quantity'])
+
+                else:
+                    item_quantity_in_holds = sum(
+                        [x[0] for x in player.cargo[commodity]])
+
+                    port_can_afford = int(self.credits/commodity_price)
+                    available_units = min(
+                        item_quantity_in_holds, port_can_afford)
+
+                while True:  # Prompt user for how much they'd like to trade
+                    # Show them how many credits they will gain or lose
+                    try:
+
+                        print(
+                            f'{commodity} units available for purchase: {available_units:,}')
+
+                        while True:
+
+                            try:
+                                quantity = int(
+                                    input(f"\nHow many units would you like to {sell_or_buy}? \t"))
+
+                                if quantity <= 0:
+                                    return
+                                elif quantity > available_units:
+                                    print(
+                                        f"\nInput a quantity between 0 and {available_units}")
+                                else:
+                                    break
+
+                            except ValueError:
+                                print("\nInput a number\n")
+
+                        transaction_cost = commodity_price * quantity
+
+                        sign = "-" if buying == True else"+"
+
+                        print(
+                            f'\nCurrent Balance: {player.credits:,} || New Balance: {player.credits + (-1* transaction_cost if buying else transaction_cost) :,} || Change: {sign} {transaction_cost:,}\n')
+
+                        selection = input(
+                            "Press [Enter] to confirm or [0] to cancel transaction.")
+
+                        if selection == "":  # If user has pressed Enter
+
+                            if quantity in range(0, available_units+1):
+
+                                if quantity == Action.previous_menu.value:
+                                    return
+                                else:
+                                    break   # Transaction details have been confirmed
+                            else:
+                                print(
+                                    "Please input a number less than or equal to the number of holds available.")
+                        else:
+                            return  # User wasnts to cancel transaction
+                    except ValueError:
+                        print("Please input a number.")
+
+                return commodity, quantity
+
+    def sell_to_port(self, player_selling_quantity, item, player):
 
         commodity = self.inventory[item]
 
-        transaction_cost = quantity * commodity['Price']
+        transaction_cost = player_selling_quantity * commodity['Price']
 
         if transaction_cost <= self.credits:
 
             # Port is no longer Selling that amount
-            commodity["Quantity"] -= quantity
+            commodity["Quantity"] -= player_selling_quantity
 
-            player.cargo[item] -= quantity
+            player.cargo[item].clear()
+            #player.cargo[item].append((player_selling_quantity, commodity["Price"]))
+
             self.credits -= transaction_cost
             player.credits += transaction_cost
 
-    def buy_from_port(self, quantity, item, player):
+    def buy_from_port(self, player_buying_quantity, item, player):
 
         commodity = self.inventory[item]
 
-        transaction_cost = quantity * commodity['Price']
+        transaction_cost = player_buying_quantity * commodity['Price']
 
-        if quantity <= commodity['Quantity'] and transaction_cost <= player.credits:
+        if player_buying_quantity <= commodity['Quantity'] and transaction_cost <= player.credits:
 
-            commodity["Quantity"] -= quantity
+            # Reduce port quantity WTB
+            commodity["Quantity"] -= player_buying_quantity
 
-            player.cargo[item] += quantity
+            player.cargo[item].append(
+                (player_buying_quantity, commodity['Price']))
 
             self.credits += transaction_cost
             player.credits -= transaction_cost
@@ -497,61 +564,64 @@ def join_all_sectors(current_map, total_sectors):
     '''
     Use Depth First Search algorithm to ensure all sectors are connected
     '''
+    #current_map = bi_directional_sectors(current_map)
+
     map_partitions = {}
-    # Start with Sector 1
+    visited = set()
 
-    visited = []
+    for root_sector in current_map:
 
-    partition_count = 0
+        if not root_sector in visited:
 
-    for sector_num in range(1, total_sectors+1):
+            visited.add(root_sector)
+            queue = [root_sector]
+            count = len(map_partitions)
+            map_partitions[count] = queue.copy()
+            section = map_partitions[count]
 
-        if not sector_num in visited:  # visited[sector_num-1] == False:
+            # Depth First Search Algorithm to find sectors that are reachable from the root sector
+            while queue:
+                # While the queue isn't empty
+                queried_sector = queue.pop()  # Retrieve the most recently added item
 
-            partition_count += 1
+                for connected_sector in current_map[queried_sector].connected_sectors:
 
-            visited.append(sector_num)
-            map_partition = [sector_num]
+                    if not connected_sector in visited:
 
-            map_partitions[partition_count] = dfs(
-                current_map, sector_num, visited, map_partition)
+                        visited.add(connected_sector)
+                        queue.append(connected_sector)
+                        section.append(connected_sector)
+
+    # Sectors aren't guaranteed to be loopable [A<>B<>C<>A]
+    # At minimum connected sectors are [A>B>C]
+
+    # Sections that aren't reachable from sector 1 may have one or more one way connections \
+    # into the section containing sector 1
 
     if len(map_partitions) > 1:
-        # Return the key for the largest section of the map
+        # Return key for the largest section of the map
         largest_section = sorted(
             map_partitions, key=lambda x: len(map_partitions[x]))[-1]
 
         for key, section in map_partitions.items():
 
             if key != largest_section:
+                # May change to create tunnels depending on the number of disjoint sectors
+                # Choose a random sector to link to from the primary map
+                entry_sector = random.choice(
+                    map_partitions[largest_section])
+                linked_sector = random.choice(section)
 
-                for _ in range(5):
+                current_map[entry_sector].connected_sectors[linked_sector] = 1
 
-                    # Choose a random sector to link to from the primary map
-                    entry_sector = random.choice(
-                        map_partitions[largest_section])
-                    linked_sector = random.choice(section)
+    # Make all sectors bi-directional
+    for key, sector in current_map.items():
 
-                    current_map[entry_sector].connected_sectors[linked_sector] = 1
-                    current_map[linked_sector].connected_sectors[entry_sector] = 1
+        for connection, cost in sector.connected_sectors.items():
+
+            current_map[connection].connected_sectors[key] = cost
 
     return current_map
-
-
-def dfs(current_map, start_point, visited, current_section):
-    '''
-    Depth First Search to find connected sectors [Recursive Function]
-    '''
-    for connected_sector in current_map[start_point].connected_sectors:
-
-        if not connected_sector in visited:
-
-            visited.append(connected_sector)
-            current_section.append(connected_sector)
-            current_section = dfs(
-                current_map, connected_sector, visited, current_section)
-
-    return current_section
 
 
 def dijkstra_path(start_point, end_point, map):
@@ -611,17 +681,6 @@ def dijkstra_path(start_point, end_point, map):
         return []
 
 
-def bi_directional_sectors(current_map):
-
-    for key, sector in current_map.items():  # loop Sctor objects in dictionary
-
-        for connection, cost in sector.connected_sectors.items():
-
-            current_map[connection].connected_sectors[key] = cost
-
-    return current_map
-
-
 def generate_map(total_sectors=100):
 
     map = {}
@@ -635,19 +694,18 @@ def generate_map(total_sectors=100):
     # Ensure that every sector is reachable
     map = join_all_sectors(map, total_sectors)
     # Enable Bi-directional sector travel unil further updates
-    map = bi_directional_sectors(map)
-
     return map
 
 
 if __name__ == "__main__":
 
-    total_sectors = 1000
+    total_sectors = 1_000
     map = generate_map(total_sectors)
 
-    user = Player("Reshui", 500, 1_000_000)
+    user = Player("Reshui", random.randint(1, total_sectors), 1_000_000)
 
-    map[user.current_sector].load_sector(False)
+    map[user.current_sector].load_sector(
+        user, currently_warping=False, process_events=True)
 
     while True:
 
