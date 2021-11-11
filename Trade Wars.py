@@ -10,6 +10,48 @@ import collections
 prompt_breaker = "============================================================================"
 
 
+class Ship:
+
+    def __init__(self, total_cargo_holds, warp_cost, cargo, attached_limpets, useable_items, model, current_sector, ship_name, owner_name, cloak_enabled):
+        self.total_cargo_holds = total_cargo_holds
+        self.warp_cost = warp_cost            # How much it costs to warp between sectors
+        self.cargo = cargo                    # Commodities or colonists
+        self.attached_limpets = attached_limpets
+        self.useable_items = useable_items    # Unused items
+        self.model = model                    # Ship class name
+        self.current_sector = current_sector
+        self.owner_name = owner_name
+        self.ship_name = ship_name
+        self.cloak_enabled = cloak_enabled
+
+        initialized_sector = map_[self.current_sector].ships_in_sector
+
+        if not self in initialized_sector:
+            initialized_sector.append(self)
+
+    def holds_available(self):
+
+        holds_used = sum([quantity[0]
+                         for value in self.cargo.values() for quantity in value])
+
+        return self.total_cargo_holds-holds_used
+
+    def update_attached_limpets(self):
+        for limpet in self.attached_limpets:
+            limpet.change_sector(self.current_sector)
+
+    def show_cargo(self):
+
+        print("Current Cargo Manifest")
+
+        for key, quantity in self.cargo.items():
+            print(f"{key}: {quantity}")
+
+        time.sleep(.3)
+
+        print(prompt_breaker)
+
+
 class Action(Enum):
     previous_menu = 0
     buy = 1
@@ -36,12 +78,12 @@ class Deployable:
 
         if quantity > 0:
             self.quantity += quantity
-            self.owner.undeployed[self.type_] -= quantity
+            self.owner.ship.useable_items[self.type_] -= quantity
         else:
             self.quantity -= quantity
 
             if not attaching_limpet_to_hull:
-                self.owner.undeployed[self.type_] += quantity
+                self.owner.ship.useable_items[self.type_] += quantity
 
         if self.quantity <= 0:  # If the deployable no longer has any of itself in the sector
 
@@ -57,44 +99,30 @@ class Deployable:
 class Limpet:
     '''Attaches to hulls and reports positioning to owner'''
 
-    def __init__(self, current_sector, victim, owner):
-        self.current_sector = current_sector
-        self.victim = victim
+    def __init__(self, tracked_ship, owner):
+        self.tracked_ship = tracked_ship
         self.owner = owner
 
     def current_location(self):
-        return self.current_sector
-
-    def change_sector(self, new_sector):
-        '''
-        Function used to track the location of limpets
-        Called whenever victim changes sectors
-        '''
-        self.current_sector = new_sector
+        return self.tracked_ship.current_sector
 
 
 class Player:
 
-    def __init__(self, name, current_sector, player_credits, cargo_holds,
-                 turns_remaining, score, undeployed, cargo, deployed, corporation, attached_limpets, tracked_limpets):
+    def __init__(self, name, current_sector, player_credits,
+                 turns_remaining, score, deployed, corporation, tracked_limpets, ship):
 
-        self.username = name
+        self.name = name
+        self.corporation = corporation
         self.current_sector = current_sector
         self.credits = player_credits
-        self.cargo_holds = cargo_holds
         self.fuel = turns_remaining
         self.score = score
-        self.cargo = cargo                  # Dictionary for commodities
+        self.ship = ship
+
         # Dictionary for where deployables placed by player are in the world
         self.deployed = deployed
-        self.undeployed = undeployed        # Dictionary of useable items
-        self.corporation = corporation
-        self.attached_limpets = attached_limpets    # list
         self.tracked_limpets = tracked_limpets
-
-        initialized_sector = self.player_sector().ships_in_sector
-        if not self in initialized_sector:
-            initialized_sector.append(self)
 
     def use_item(self, item, quantity, mode=None, changing_quantity=False, changing_properties=False):
         '''
@@ -145,14 +173,7 @@ class Player:
             target_sector.create_planet(self)
 
         if not changing_quantity:  # I f not modifying the quantity of an already existing deployable
-            self.undeployed[item] -= quantity
-
-    def holds_available(self):
-
-        holds_used = sum([quantity[0]
-                         for value in self.cargo.values() for quantity in value])
-
-        return self.cargo_holds-holds_used
+            self.ship.useable_items[item] -= quantity
 
     def add_to_avoid_list(self, new_sector):
 
@@ -185,7 +206,9 @@ class Player:
             self.move_sectors(dest)
 
         elif action[0] == "c":
-            self.show_cargo()
+            self.ship.show_cargo()
+            self.player_sector.load_sector(
+                self, currently_warping=False, process_events=False)
         elif action[0] == "u":
             self.item_selection()
         elif action.isdigit():  # Used for entering Ports or Planets
@@ -200,23 +223,13 @@ class Player:
             except KeyError:
                 pass
 
-    def show_cargo(self):
-
-        print("Current Cargo Manifest")
-
-        for key, quantity in self.cargo.items():
-            print(f"{key}: {quantity}")
-        time.sleep(.3)
-        print(prompt_breaker)
-        map_[self.current_sector].load_sector(
-            self, currently_warping=False, process_events=False)
-
     def move_sectors(self, destination=None):
 
         start = self.current_sector
 
         print(f'Current Sector:\t{start}')
 
+        # Prompt user for a valid destination or to exit the menu
         while True:
 
             if destination == None or not destination in range(1, game.total_sectors+1):
@@ -233,21 +246,17 @@ class Player:
                 break
 
         if end == 0:
-            # Replace this with re-display sector !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             self.player_sector().load_sector(
                 self, currently_warping=False, process_events=False)
             return
 
-        elif 1 <= end <= game.total_sectors:
+        elif end in range(1, game.total_sectors+1):
 
             if not end in self.player_sector().connected_sectors:
-
+                # More than 1 warp required to reach the destination
                 sectors_to_load = BFS(start, end, map_)
-               # sectors_to_load = dijkstra_path(start, end, map_)
             else:
                 sectors_to_load = [end]
-
-            #print('Lowest Cost: ' + str(data[end_point]['cost']))
 
             print('Path: ' + " > ".join([str(element)
                                         for element in [self.current_sector] + sectors_to_load]))
@@ -258,23 +267,24 @@ class Player:
 
                 old_sector = self.player_sector()
 
-                if self.fuel-old_sector.connected_sectors[sector] > 0:
+                # old_sector.connected_sectors[sector] > 0:
+                if self.fuel-self.ship.warp_cost > 0:
+
+                    lessen_fighter_response = True if sector != end else False
 
                     time.sleep(.4)
-                   # Subtract the cost to travel to the sector
+                    self.fuel -= self.ship.warp_cost
 
-                    self.fuel -= \
-                        old_sector.connected_sectors[sector]
+                    old_sector.ships_in_sector.remove(self.ship)
 
-                    old_sector.ships_in_sector.remove(self)
-
-                    self.current_sector = sector
+                    self.current_sector, self.ship.current_sector = sector
 
                     new_sector = self.player_sector()
 
-                    new_sector.ships_in_sector.append(self)
+                    new_sector.ships_in_sector.append(self.ship)
+
                     new_sector.load_sector(
-                        self, currently_warping=True, process_events=True)
+                        self, lessen_fighter_response, process_events=True)
 
                 else:
                     print("Not enough Fuel.")
@@ -287,7 +297,9 @@ class Player:
 
         count = 1
 
-        for item, quantity in self.undeployed.items():
+        ship_items = self.ship.useable_items
+
+        for item, quantity in ship_items.items():
             tabs = "\t\t" if len(item) <= 10 else "\t"
             print(f"({count})  {item}{tabs}Available:\t{quantity}")
             count += 1
@@ -307,9 +319,9 @@ class Player:
         else:
 
             # Get the key corresponding to the user selection
-            item = list(self.undeployed.keys())[selection-1]
+            item = list(ship_items.keys())[selection-1]
 
-            available_quantity = self.undeployed[item]
+            available_quantity = ship_items[item]
 
             if available_quantity > 0:
 
@@ -333,9 +345,7 @@ class Player:
                 print(f"\nNo {item} were found on ship.\n")
                 time.sleep(1)
 
-    def update_attached_limpets(self):
-        for limpet in self.attached_limpets:
-            limpet.change_sector(self.current_sector)
+        self.player_sector().load_sector(self, True, False)
 
     def player_sector(self):
         return map_[self.current_sector]
@@ -347,7 +357,7 @@ class Planet:
 
         self.sector = sector
 
-        self.owner = owner.name
+        self.owner = owner
         self.corporation = owner.corporation
 
         # Dictionary listing total population and their distribution for each commodity
@@ -398,7 +408,7 @@ class Sector:
         # Deployable can either be of the Deployable or Planet class
         self.deployed_items.append(deployable)
 
-    def load_sector(self, player, currently_warping, process_events):
+    def load_sector(self, player, lessen_fighter_response, process_events):
 
         # load events will be used for hazard / deployable interaction
 
@@ -434,13 +444,14 @@ class Sector:
         print(
             f'\n[Nearby Warps] : ' + nearby_sectors + '\n')
 
-        ships = [ship.username for ship in self.ships_in_sector]
+        ships = [
+            ship.ship_name for ship in self.ships_in_sector if not ship.cloak_enabled]
 
         if len(ships) > 0:
             print(ships)
 
-        if len(player.attached_limpets) > 0:
-            player.update_attached_limpets(self.sector)
+        if len(player.ship.attached_limpets) > 0:
+            player.ship.update_attached_limpets(self.sector)
 
         if process_events:
             # Deal with deployables and enviromental hazards
@@ -518,20 +529,30 @@ class Sector:
 
         for deployable in self.deployed_items:
 
-            friendly = True if victim == deployable.owner\
+            friendly = True if victim is deployable.owner\
                 or (deployable.owner.corporation == victim.corporation
                     and deployable.owner.corporation != None
                     and victim.corporation != None)\
                 else False
 
-            if isinstance(deployable, Limpet) and not friendly:
+            if not friendly:
 
-                new_limpet = Limpet(self.sector, victim, deployable.owner)
+                if deployable.type == "Limpets":
 
-                victim.attached_limpets.append(new_limpet)
-                deployable.owner.tracked_limpets.append(new_limpet)
+                    new_limpet = Limpet(victim.ship, deployable.owner)
 
-                deployable.edit_amount_in_sector(-1, True)
+                    deployable.edit_amount_in_sector(-1, True)
+
+                    victim.ship.attached_limpets.append(new_limpet)
+
+                    deployable.owner.tracked_limpets.append(new_limpet)
+
+                elif deployable.type == "Mines":
+                    pass
+                elif deployable.type == "Warp Disruptors":
+                    pass
+                elif deployable.type == "Fighters":
+                    pass
 
 
 class TradePort:
@@ -660,11 +681,11 @@ class TradePort:
                     tabs += '\t'
 
                 item_quantity_in_holds = sum(
-                    [x[0] for x in player.cargo[key]])
+                    [x[0] for x in player.ship.cargo[key]])
 
                 if item_quantity_in_holds > 0:
                     avg_price = np.average([x[1]
-                                            for x in player.cargo[key]])
+                                            for x in player.ship.cargo[key]])
                 else:
                     avg_price = 0
 
@@ -687,7 +708,7 @@ class TradePort:
 
         if len(available_for_purchase) == 0:  # Check if trades aren't possible
 
-            items_on_ship = player.holds_available() != player.cargo_holds
+            items_on_ship = player.ship.holds_available() != player.ship.cargo_holds
 
             if not buying:
 
@@ -737,12 +758,12 @@ class TradePort:
 
                     player_can_afford = int(player.credits/commodity_price)
 
-                    available_units = min(player.holds_available(
+                    available_units = min(player.ship.holds_available(
                     ), player_can_afford, self.inventory[commodity]['Quantity'])
 
                 else:
                     item_quantity_in_holds = sum(
-                        [x[0] for x in player.cargo[commodity]])
+                        [x[0] for x in player.ship.cargo[commodity]])
 
                     port_can_afford = int(self.credits/commodity_price)
                     available_units = min(
@@ -805,8 +826,8 @@ class TradePort:
             # Port is no longer Selling that amount
             commodity["Quantity"] -= player_selling_quantity
 
-            player.cargo[item].clear()
-            #player.cargo[item].append((player_selling_quantity, commodity["Price"]))
+            # Edit the below line so users can sell what ever amount they want
+            player.ship.cargo[item].clear()
 
             self.credits -= transaction_cost
             player.credits += transaction_cost
@@ -823,7 +844,7 @@ class TradePort:
             # Reduce port quantity WTB
             commodity["Quantity"] -= player_buying_quantity
 
-            player.cargo[item].append(
+            player.ship.cargo[item].append(
                 (player_buying_quantity, commodity['Price']))
 
             self.credits += transaction_cost
@@ -1024,7 +1045,7 @@ def generate_map(total_sectors=100):
     return current_map
 
 
-def default_player_properties(sector_total):
+def default_player_properties(sector_total, player_name):
 
     deployed_items = {'Limpets': {}, "Mines": {},
                       "Warp Disruptors": {}, "Fighters": {}}
@@ -1044,26 +1065,28 @@ def default_player_properties(sector_total):
     turns_remaining, score, total_holds, credits, starting_sector = 10_000, 0, 3_000, 20_000, random.randint(
         1, sector_total)
 
-    return deployed_items, undeployed, cargo, corporation, attached_limpets, turns_remaining, score, total_holds, credits, starting_sector, tracked_limpets
+    player_ship = Ship(total_holds, -1, cargo, attached_limpets,
+                       undeployed, "Class I", starting_sector, "Unknown", player_name, False)
+
+    return deployed_items, corporation,  turns_remaining, score, credits, starting_sector, tracked_limpets, player_ship
 
 
 if __name__ == "__main__":
 
+    player_name = "Reshui"
     total_sectors = 1_000
+
     map_ = generate_map(total_sectors)
 
-    deployed_items, undeployed, cargo, corporation, attached_limpets,\
-        turns_remaining, score, total_holds, credits, starting_sector, tracked_limpets \
-        = default_player_properties(total_sectors)
+    deployed_items, corporation, turns_remaining, score, credits, starting_sector, tracked_limpets, ship \
+        = default_player_properties(total_sectors, player_name)
 
     # Ideally these should be retrieved from a databse of some sort
-    user = Player("Reshui", starting_sector, credits, total_holds,
-                  turns_remaining, score, undeployed, cargo, deployed_items, corporation, attached_limpets, tracked_limpets)
+    user = Player(player_name, starting_sector, credits,
+                  turns_remaining, score, deployed_items, corporation,  tracked_limpets, ship)
 
-    current_sector = user.player_sector()
-
-    current_sector.load_sector(
-        user, currently_warping=False, process_events=True)
+    user.player_sector().load_sector(
+        user, lessen_fighter_response=False, process_events=False)
 
     game_deployables = {}
 
