@@ -27,7 +27,7 @@ class Deployable:
         self.sector_num = sector_num
         self.type_ = type_
         self.quantity = quantity
-        self.owner_name = owner.name
+        self.owner_name = owner.username
         self.corporation = owner.corporation
 
         self.mode = mode                              # Used for fighter state
@@ -58,8 +58,8 @@ class Limpet:
 
     def __init__(self, current_sector, victim, owner_name):
         self.current_sector = current_sector
-        self.victim = victim.name
-        self.owner_nmae = owner_name
+        self.victim = victim.username
+        self.owner_name = owner_name
 
     def current_location(self):
         return self.current_sector
@@ -262,9 +262,10 @@ class Player:
 
                     self.current_sector = sector
 
-                    self.player_sector().ships_in_sector.append(self)
+                    new_sector = self.player_sector()
 
-                    map_[sector].load_sector(
+                    new_sector.ships_in_sector.append(self)
+                    new_sector.load_sector(
                         self, currently_warping=True, process_events=True)
 
                 else:
@@ -363,7 +364,7 @@ class Planet:
 
 class Sector:
 
-    def __init__(self, sector_number, ports_in_sector=None, connected_sectors=None, deployed_items=[], debris_percent=0, ships_in_sector=[]):
+    def __init__(self, sector_number, ports_in_sector=None, connected_sectors=None, deployed_items=[], debris_percent=0, ships_in_sector=[], game_sectors_total=1_000):
 
         self.sector = sector_number
         self.deployed_items = deployed_items
@@ -378,7 +379,8 @@ class Sector:
             self.ports = ports_in_sector
 
         if connected_sectors == None:
-            self.connected_sectors = self.generate_connecting_sectors()
+            self.connected_sectors = self.generate_connecting_sectors(
+                game_sectors_total)
         else:
             self.connected_sectors = connected_sectors
 
@@ -423,8 +425,10 @@ class Sector:
         print(
             f'\n[Nearby Warps] : ' + nearby_sectors + '\n')
 
-        for ship in self.ships_in_sector:
-            pass
+        ships = [ship.username for ship in self.ships_in_sector]
+
+        if len(ships) > 0:
+            print(ships)
 
         if len(player.attached_limpets) > 0:
             player.update_attached_limpets(self.sector)
@@ -438,7 +442,7 @@ class Sector:
     def load_terra(self):
         pass
 
-    def generate_connecting_sectors(self):
+    def generate_connecting_sectors(self, total_sectors):
 
         total_connecting_sectors = random.randrange(2, 4)
 
@@ -447,7 +451,7 @@ class Sector:
         for _ in range(total_connecting_sectors):
 
             while True:
-                sector = random.randint(1, game.total_sectors)
+                sector = random.randint(1, total_sectors)
                 if not sector in connected_sectors:
                     break
 
@@ -508,9 +512,9 @@ class Sector:
             if isinstance(deployable, Limpet):
 
                 victim.attached_limpets.append(
-                    Limpet(self.sector, victim.name))
+                    Limpet(self.sector, victim.username, deployable.owner_name))
 
-                deployable.edit_amount_in_sector(deployable.owner_nmae, -1)
+                deployable.edit_amount_in_sector(deployable.owner_name, -1)
 
 
 class TradePort:
@@ -994,15 +998,16 @@ def generate_map(total_sectors=100):
 
     for current_sector in range(1, total_sectors+1):
         # Each sector originally connects to 2 to 4 other sectors
-        current_map[current_sector] = Sector(current_sector)
+        current_map[current_sector] = Sector(
+            current_sector, game_sectors_total=total_sectors)
 
     # Ensure that every sector is reachable
-    current_map.join_all_sectors(total_sectors, current_map)
+    current_map = join_all_sectors(total_sectors, current_map)
 
     return current_map
 
 
-def default_player_properties():
+def default_player_properties(sector_total):
 
     deployed_items = {'Limpets': {}, "Mines": {},
                       "Warp Disruptors": {}, "Fighters": {}}
@@ -1019,18 +1024,19 @@ def default_player_properties():
     attached_limpets = []
 
     turns_remaining, score, total_holds, credits, starting_sector = 10_000, 0, 3_000, 20_000, random.randint(
-        1, game.total_sectors)
+        1, sector_total)
 
     return deployed_items, undeployed, cargo, corporation, attached_limpets, turns_remaining, score, total_holds, credits, starting_sector
 
 
 if __name__ == "__main__":
 
-    map_ = generate_map(total_sectors=1_000)
+    total_sectors = 1_000
+    map_ = generate_map(total_sectors)
 
     deployed_items, undeployed, cargo, corporation, attached_limpets,\
         turns_remaining, score, total_holds, credits, starting_sector \
-        = default_player_properties()
+        = default_player_properties(total_sectors)
 
     # Ideally these should be retrieved from a databse of some sort
     user = Player("Reshui", starting_sector, credits, total_holds,
