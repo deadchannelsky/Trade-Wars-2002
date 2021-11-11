@@ -3,7 +3,7 @@ import numpy as np
 from enum import Enum
 import time
 import collections
-import copy
+
 #import threading
 #import socket
 
@@ -14,17 +14,6 @@ class Action(Enum):
     previous_menu = 0
     buy = 1
     sell = 2
-
-
-class DeployableType(Enum):
-    limpets = 1
-    mines = 2
-    warp_disruptor = 5
-    fighter = 6
-
-    planet_cracker = 3
-    planet_creator = 4
-    photon_cannon = 7
 
 
 class Deployable:
@@ -38,15 +27,55 @@ class Deployable:
         self.sector_num = sector_num
         self.type_ = type_
         self.quantity = quantity
-        self.owner = owner
+        self.owner_name = owner.name
+        self.corporation = owner.corporation
 
         self.mode = mode                              # Used for fighter state
+
+    def edit_amount_in_sector(self, player_name, quantity):
+        '''Edits quantity of deployable in the sector... deletes from sector and player log if less than 0'''
+
+        player = game.return_player(player_name)
+
+        if quantity > 0:
+            self.quantity += quantity
+            player.undeployed[self.type_] -= quantity
+        else:
+            self.quantity -= quantity
+            player.undeployed[self.type_] += quantity
+
+        if self.quantity <= 0:  # If the deployable no longer has any of itself in the sector
+            self.deployed_sector().deployed_items.remove(self)
+            del player.deployed[self.type_][self.current_sector]
+
+    def deployed_sector(self):
+        '''Returns the object representing the sector the deployable is in.'''
+        return map_[self.current_sector]
+
+
+class Limpet:
+    '''Attaches to hulls and reports positioning to owner'''
+
+    def __init__(self, current_sector, victim, owner_name):
+        self.current_sector = current_sector
+        self.victim = victim.name
+        self.owner_nmae = owner_name
+
+    def current_location(self):
+        return self.current_sector
+
+    def change_sector(self, new_sector):
+        '''
+        Function used to track the location of limpets
+        Called whenever victim changes sectors
+        '''
+        self.current_sector = new_sector
 
 
 class Player:
 
     def __init__(self, name, current_sector, player_credits, cargo_holds,
-                 turns_remaining, score, undeployed, cargo, deployed, corporation):
+                 turns_remaining, score, undeployed, cargo, deployed, corporation, attached_limpets):
 
         self.username = name
         self.current_sector = current_sector
@@ -58,21 +87,42 @@ class Player:
         self.deployed = deployed
         self.undeployed = undeployed
         self.corporation = corporation
+        self.attached_limpets = attached_limpets
 
-    def use_item(self, item_num, quantity, mode=None):
+        self.player_sector().ships_in_sector.append(self)
 
-        target_sector = map[self.current_sector]
+    def use_item(self, item, quantity, mode=None, changing_quantity=False, changing_properties=False):
+        '''
+        Use,edit or add a deployable to the current sector.
+        '''
+        target_sector = map_[self.current_sector]
 
-        if item_num in [1, 2, 5, 6]:
+        if item in ["Limpets", "Mines", "Fighters", "Warp Disruptors"]:
             # Mines,Limpets,Warp disruptors,Fighters
-            placed_deployable = Deployable(
-                self, item_num, self.current_sector, quantity, mode)
 
-            target_sector.place_deployable_in_sector(placed_deployable)
+            # Check if player already has deployables of that type in the sector
+            if self.current_sector in self.deployed[item]:
+                # You have to be in the sector to edit deployables
+                deployed_item = self.deployed[item][self.current_sector]
 
-        elif item_num in [3, 7]:
+                if changing_quantity:
 
-            if item_num == 3:
+                    deployed_item.edit_amount_in_sector(self.name, quantity)
+
+                elif changing_properties:
+                    # Used for editing deployed fighter status
+                    pass
+            else:
+                placed_deployable = Deployable(
+                    self, item, self.current_sector, quantity, mode)
+
+                target_sector.place_deployable_in_sector(placed_deployable)
+
+                self.deployed[item][self.current_sector] = placed_deployable
+
+        elif item in ["Planet Crackers", "Photon Ammo"]:
+
+            if item == "Planet Crackers":
                 #   Planet Cracker
                 available_planets = target_sector.planets_in_sector()
 
@@ -85,9 +135,11 @@ class Player:
                 # Launches turn denial weapon
                 # Disables Quasar cannons temporarily for 20 seconds
                 pass
-        else:
-            # Planet creator
+        elif item == "Planet Generators":
             target_sector.create_planet(self)
+
+        if not changing_quantity:  # I f not modifying the quantity of an already existing deployable
+            self.undeployed[item] -= quantity
 
     def holds_available(self):
 
@@ -96,9 +148,9 @@ class Player:
 
         return self.cargo_holds-holds_used
 
-    def avoid_list(self, avoided_sectors):
+    def add_to_avoid_list(self, new_sector):
 
-        return avoided_sectors
+        pass
 
     def check_input(self, action):
 
@@ -108,7 +160,7 @@ class Player:
             pass
 
         elif action[0] == 'm':
-
+            # Player wants to move sectors
             if len(action) > 1:
                 dest = action[1:].replace(" ", "")
                 if dest.isdigit():
@@ -127,27 +179,31 @@ class Player:
             self.move_sectors(dest)
 
         elif action[0] == "c":
-
-            print("Current Cargo Manifest")
-
-            for key, quantity in self.cargo.items():
-                print(f"{key}: {quantity}")
-            time.sleep(.5)
-            print(prompt_breaker)
-            map[self.current_sector].load_sector(
-                self, currently_warping=False, process_events=False)
-
+            self.show_cargo()
+        elif action[0] == "u":
+            self.item_selection()
         elif action.isdigit():  # Used for entering Ports or Planets
 
             action = int(action)
 
             try:
-                sector_obj = map[self.current_sector]
+                sector_obj = map_[self.current_sector]
                 sector_obj.ports[action].enter_port(self)
                 sector_obj.load_sector(
                     self, currently_warping=True, process_events=True)
             except KeyError:
                 pass
+
+    def show_cargo(self):
+
+        print("Current Cargo Manifest")
+
+        for key, quantity in self.cargo.items():
+            print(f"{key}: {quantity}")
+        time.sleep(.3)
+        print(prompt_breaker)
+        map_[self.current_sector].load_sector(
+            self, currently_warping=False, process_events=False)
 
     def move_sectors(self, destination=None):
 
@@ -157,12 +213,12 @@ class Player:
 
         while True:
 
-            if destination == None or not destination in range(1, total_sectors+1):
+            if destination == None or not destination in range(1, game.total_sectors+1):
 
                 try:
                     print("Press 0 to return to the previous menu")
                     end = int(
-                        input("Enter target sector (1-{})> ".format(total_sectors)))
+                        input("Enter target sector (1-{})> ".format(game.total_sectors)))
                     break
                 except:
                     print("Please input a number.")
@@ -172,16 +228,16 @@ class Player:
 
         if end == 0:
             # Replace this with re-display sector !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            map[self.current_sector].load_sector(
+            map_[self.current_sector].load_sector(
                 self, currently_warping=False, process_events=False)
             return
 
-        elif 1 <= end <= total_sectors:
+        elif 1 <= end <= game.total_sectors:
 
-            if not end in map[self.current_sector].connected_sectors:
+            if not end in map_[self.current_sector].connected_sectors:
 
-                sectors_to_load = BFS(start, end, map)
-               # sectors_to_load = dijkstra_path(start, end, map)
+                sectors_to_load = BFS(start, end, map_)
+               # sectors_to_load = dijkstra_path(start, end, map_)
             else:
                 sectors_to_load = [end]
 
@@ -194,17 +250,21 @@ class Player:
 
             for sector in sectors_to_load:
 
-                if self.fuel-map[self.current_sector].connected_sectors[sector] > 0:
+                if self.fuel-map_[self.current_sector].connected_sectors[sector] > 0:
 
                     time.sleep(.4)
                    # Subtract the cost to travel to the sector
 
                     self.fuel -= \
-                        map[self.current_sector].connected_sectors[sector]
+                        map_[self.current_sector].connected_sectors[sector]
+
+                    self.player_sector().ships_in_sector.remove(self)
 
                     self.current_sector = sector
 
-                    map[sector].load_sector(
+                    self.player_sector().ships_in_sector.append(self)
+
+                    map_[sector].load_sector(
                         self, currently_warping=True, process_events=True)
 
                 else:
@@ -214,13 +274,72 @@ class Player:
         else:
             print("Input a valid number.")
 
+    def item_selection(self):
+
+        count = 1
+
+        for item, quantity in self.undeployed.items():
+            tabs = "\t\t" if len(item) <= 10 else "\t"
+            print(f"({count})  {item}{tabs}Available:\t{quantity}")
+            count += 1
+        else:
+            print("\n(0)    Exit\n")
+
+        while True:
+            try:
+                selection = int(input("Select an option from the list: \t"))
+                if selection in range(count+1):
+                    break
+            except ValueError:
+                print("Input a number.")
+
+        if selection == Action.previous_menu.value:
+            return
+        else:
+
+            # Get the key corresponding to the user selection
+            item = list(self.undeployed.keys())[selection-1]
+
+            available_quantity = self.undeployed[item]
+
+            if available_quantity > 0:
+
+                if item in ["Limpets", "Mines", "Fighters", "Warp Disruptors"]:
+                    quantity = int(
+                        input(f"How many {item} do you want to deploy (0-{available_quantity})?\t"))
+
+                    if quantity > 0:
+
+                        if item == "Fighters":
+                            # Prompt player for deployment mode
+                            pass
+
+                        self.use_item(item, quantity)
+
+                else:
+                    quantity = 1
+                    # now check if planet creator,destroyer,photon cannon
+                    self.use_item(item, quantity)
+            else:
+                print(f"\nNo {item} were found on ship.\n")
+                time.sleep(1)
+
+    def update_attached_limpets(self):
+        for limpet in self.attached_limpets:
+            limpet.change_sector(self.current_sector)
+
+    def player_sector(self):
+        return map_[self.current_sector]
+
 
 class Planet:
 
     def __init__(self, owner, sector, planet_type, name, fighters, population, shields, inventory, citadel):
 
         self.sector = sector
-        self.owner = owner
+
+        self.owner = owner.name
+        self.corporation = owner.corporation
 
         # Dictionary listing total population and their distribution for each commodity
         self.population = population
@@ -235,14 +354,21 @@ class Planet:
     def rename(self, new_name):
         self.name = new_name
 
+    def destroy_planet(self):
+        pass
+
+    def land_on_planet(self):
+        pass
+
 
 class Sector:
 
-    def __init__(self, sector_number, ports_in_sector=None, connected_sectors=None, deployed_items=[], debris_percent=0):
+    def __init__(self, sector_number, ports_in_sector=None, connected_sectors=None, deployed_items=[], debris_percent=0, ships_in_sector=[]):
 
         self.sector = sector_number
         self.deployed_items = deployed_items
         self.debirs_percent = debris_percent
+        self.ships_in_sector = ships_in_sector
 
         if ports_in_sector == None and sector_number != 1:
             self.ports = self.generate_ports()
@@ -266,10 +392,24 @@ class Sector:
         # load events will be used for hazard / deployable interaction
 
         nearby_sectors = " - ".join(
-            [str(element) for element in list(map[self.sector].connected_sectors.keys())])
+            [str(element) for element in list(self.connected_sectors.keys())])
 
         print(
             f'\n[Current Sector]: {self.sector}\t\t\t[Fuel remaining]: {player.fuel:,}\n ')
+
+        planets = self.planets_in_sector()
+
+        interface_num = 1
+
+        if len(planets) > 0:
+
+            print("*************************************")
+            print("              Planets                \n")
+
+            for planet in planets:
+                print(f"({interface_num})\t\t{planet.name}")
+                interface_num += 1
+            print("\n*************************************\n")
 
         if self.sector == 1:
             pass
@@ -278,10 +418,20 @@ class Sector:
 
             # Print the ports in the sector
             for num, port in enumerate(self.ports.values()):
-                print(f'({num+1}) {port.name}')
+                print(f'({num+interface_num}) {port.name}')
 
         print(
             f'\n[Nearby Warps] : ' + nearby_sectors + '\n')
+
+        for ship in self.ships_in_sector:
+            pass
+
+        if len(player.attached_limpets) > 0:
+            player.update_attached_limpets(self.sector)
+
+        if process_events:
+            # Deal with deployables and enviromental hazards
+            pass
 
         print(prompt_breaker)
 
@@ -297,7 +447,7 @@ class Sector:
         for _ in range(total_connecting_sectors):
 
             while True:
-                sector = random.randint(1, total_sectors)
+                sector = random.randint(1, game.total_sectors)
                 if not sector in connected_sectors:
                     break
 
@@ -320,7 +470,7 @@ class Sector:
                     self.sector, port_number)
         return sector_ports
 
-    def create_planet(self, owner, planet=None):
+    def create_planet(self, planet_owner, planet=None):
 
         if planet == None:
 
@@ -332,10 +482,13 @@ class Sector:
             planet_type = random.randint(1, 9)
             citadel = None
 
-            new_planet = Planet(self.sector, owner, planet_type, input("Enter planet name:\t"),
+            new_planet = Planet(self.sector, planet_owner, planet_type, input("Enter planet name:\t"),
                                 fighters, planet_population, planetary_shields, planet_inventory, citadel)
 
             self.place_deployable_in_sector(new_planet)
+
+            self.load_sector(planet_owner, False, False)
+
         else:
             self.place_deployable_in_sector(planet)
 
@@ -347,6 +500,17 @@ class Sector:
                 planet_list.append(obj)
 
         return planet_list
+
+    def sector_events(self, victim):
+
+        for deployable in self.deployed_items:
+
+            if isinstance(deployable, Limpet):
+
+                victim.attached_limpets.append(
+                    Limpet(self.sector, victim.name))
+
+                deployable.edit_amount_in_sector(deployable.owner_nmae, -1)
 
 
 class TradePort:
@@ -625,6 +789,7 @@ class TradePort:
 
             self.credits -= transaction_cost
             player.credits += transaction_cost
+            player.score += 1000
 
     def buy_from_port(self, player_buying_quantity, item, player):
 
@@ -642,6 +807,7 @@ class TradePort:
 
             self.credits += transaction_cost
             player.credits -= transaction_cost
+            player.score += 1000
 
     def steal_from_port(self, quantity, item):
         pass
@@ -655,12 +821,22 @@ class TradePort:
         self.credits += 300_000
 
 
-def join_all_sectors(current_map, total_sectors):
+class Game:
+
+    def __init__(self, chart, players, deployables):
+
+        self.players = players
+        self.map_ = chart
+        self.total_sectors = len(chart)
+
+    def return_player(self, player_name):
+        self.players[player_name]
+
+
+def join_all_sectors(total_sectors, current_map):
     '''
     Use Depth First Search algorithm to ensure all sectors are connected
     '''
-    #current_map = bi_directional_sectors(current_map)
-
     map_partitions = {}
     visited = set()
 
@@ -756,18 +932,19 @@ def BFS(start, end, current_map):
     return list(path)
 
 
-def dijkstra_path(start_point, end_point, map):
+def dijkstra_path(start_point, end_point, current_map):
     '''
     Dijkstra's algorithm used to find shortest fuel cost path 
     '''
 
-    data = {key: np.inf for key in map}
+    data = {key: np.inf for key in map_}
 
     data[start_point] = 0
 
     predecessor = {}
 
-    n_map = {sector: map[sector].connected_sectors.copy() for sector in map}
+    n_map = {sector: current_map[sector].connected_sectors.copy()
+             for sector in map_}
 
     while n_map:  # While there are still nodes to visit
 
@@ -813,47 +990,60 @@ def dijkstra_path(start_point, end_point, map):
 
 def generate_map(total_sectors=100):
 
-    map = {}
+    current_map = {}
 
     for current_sector in range(1, total_sectors+1):
-
-        # Create Sector objects
         # Each sector originally connects to 2 to 4 other sectors
-        map[current_sector] = Sector(current_sector)
+        current_map[current_sector] = Sector(current_sector)
 
     # Ensure that every sector is reachable
-    map = join_all_sectors(map, total_sectors)
-    # Enable Bi-directional sector travel unil further updates
-    return map
+    current_map.join_all_sectors(total_sectors, current_map)
+
+    return current_map
 
 
-if __name__ == "__main__":
-
-    total_sectors = 10_000
-
-    map = generate_map(total_sectors)
+def default_player_properties():
 
     deployed_items = {'Limpets': {}, "Mines": {},
                       "Warp Disruptors": {}, "Fighters": {}}
 
-    undeployed = dict.fromkeys(deployed_items.keys(), 0)
+    undeployed = dict.fromkeys(deployed_items.keys(), 1)
     undeployed.update(
-        {"Photon Ammo": 0, "Planet Crackers": 0, "Planet Generators": 0})
+        {"Photon Ammo": 1, "Planet Crackers": 1, "Planet Generators": 1})
 
     cargo = {'Ore': [], "Organics": [],
              "Equipment": [], 'Armor': [], "Batteries": []}
 
     corporation = None
 
+    attached_limpets = []
+
     turns_remaining, score, total_holds, credits, starting_sector = 10_000, 0, 3_000, 20_000, random.randint(
-        1, total_sectors)
+        1, game.total_sectors)
+
+    return deployed_items, undeployed, cargo, corporation, attached_limpets, turns_remaining, score, total_holds, credits, starting_sector
+
+
+if __name__ == "__main__":
+
+    map_ = generate_map(total_sectors=1_000)
+
+    deployed_items, undeployed, cargo, corporation, attached_limpets,\
+        turns_remaining, score, total_holds, credits, starting_sector \
+        = default_player_properties()
 
     # Ideally these should be retrieved from a databse of some sort
     user = Player("Reshui", starting_sector, credits, total_holds,
-                  turns_remaining, score, undeployed, cargo, deployed_items, corporation)
+                  turns_remaining, score, undeployed, cargo, deployed_items, corporation, attached_limpets)
 
-    map[user.current_sector].load_sector(
+    current_sector = user.player_sector()
+
+    current_sector.load_sector(
         user, currently_warping=False, process_events=True)
+
+    game_deployables = {}
+
+    game = Game(map_, {"Reshui": user}, game_deployables)
 
     while True:
 
