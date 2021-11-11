@@ -27,26 +27,27 @@ class Deployable:
         self.sector_num = sector_num
         self.type_ = type_
         self.quantity = quantity
-        self.owner_name = owner.username
-        self.corporation = owner.corporation
+        self.owner = owner
 
         self.mode = mode                              # Used for fighter state
 
-    def edit_amount_in_sector(self, player_name, quantity):
+    def edit_amount_in_sector(self, quantity, attaching_limpet_to_hull):
         '''Edits quantity of deployable in the sector... deletes from sector and player log if less than 0'''
-
-        player = game.return_player(player_name)
 
         if quantity > 0:
             self.quantity += quantity
-            player.undeployed[self.type_] -= quantity
+            self.owner.undeployed[self.type_] -= quantity
         else:
             self.quantity -= quantity
-            player.undeployed[self.type_] += quantity
+
+            if not attaching_limpet_to_hull:
+                self.owner.undeployed[self.type_] += quantity
 
         if self.quantity <= 0:  # If the deployable no longer has any of itself in the sector
+
             self.deployed_sector().deployed_items.remove(self)
-            del player.deployed[self.type_][self.current_sector]
+
+            del self.owner.deployed[self.type_][self.sector_num]
 
     def deployed_sector(self):
         '''Returns the object representing the sector the deployable is in.'''
@@ -56,10 +57,10 @@ class Deployable:
 class Limpet:
     '''Attaches to hulls and reports positioning to owner'''
 
-    def __init__(self, current_sector, victim, owner_name):
+    def __init__(self, current_sector, victim, owner):
         self.current_sector = current_sector
-        self.victim = victim.username
-        self.owner_name = owner_name
+        self.victim = victim
+        self.owner = owner
 
     def current_location(self):
         return self.current_sector
@@ -75,7 +76,7 @@ class Limpet:
 class Player:
 
     def __init__(self, name, current_sector, player_credits, cargo_holds,
-                 turns_remaining, score, undeployed, cargo, deployed, corporation, attached_limpets):
+                 turns_remaining, score, undeployed, cargo, deployed, corporation, attached_limpets, tracked_limpets):
 
         self.username = name
         self.current_sector = current_sector
@@ -83,19 +84,23 @@ class Player:
         self.cargo_holds = cargo_holds
         self.fuel = turns_remaining
         self.score = score
-        self.cargo = cargo
+        self.cargo = cargo                  # Dictionary for commodities
+        # Dictionary for where deployables placed by player are in the world
         self.deployed = deployed
-        self.undeployed = undeployed
+        self.undeployed = undeployed        # Dictionary of useable items
         self.corporation = corporation
-        self.attached_limpets = attached_limpets
+        self.attached_limpets = attached_limpets    # list
+        self.tracked_limpets = tracked_limpets
 
-        self.player_sector().ships_in_sector.append(self)
+        initialized_sector = self.player_sector().ships_in_sector
+        if not self in initialized_sector:
+            initialized_sector.append(self)
 
     def use_item(self, item, quantity, mode=None, changing_quantity=False, changing_properties=False):
         '''
         Use,edit or add a deployable to the current sector.
         '''
-        target_sector = map_[self.current_sector]
+        target_sector = self.player_sector()
 
         if item in ["Limpets", "Mines", "Fighters", "Warp Disruptors"]:
             # Mines,Limpets,Warp disruptors,Fighters
@@ -107,7 +112,8 @@ class Player:
 
                 if changing_quantity:
 
-                    deployed_item.edit_amount_in_sector(self.name, quantity)
+                    deployed_item.edit_amount_in_sector(
+                        self.name, quantity, False)
 
                 elif changing_properties:
                     # Used for editing deployed fighter status
@@ -170,7 +176,7 @@ class Player:
             else:
 
                 nearby_sectors = " | ".join(
-                    [str(element) for element in list(map[self.current_sector].connected_sectors.keys())])
+                    [str(element) for element in list(self.player_sector().connected_sectors.keys())])
 
                 print('[Nearby Warps] : ' + nearby_sectors + '\n')
 
@@ -228,13 +234,13 @@ class Player:
 
         if end == 0:
             # Replace this with re-display sector !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            map_[self.current_sector].load_sector(
+            self.player_sector().load_sector(
                 self, currently_warping=False, process_events=False)
             return
 
         elif 1 <= end <= game.total_sectors:
 
-            if not end in map_[self.current_sector].connected_sectors:
+            if not end in self.player_sector().connected_sectors:
 
                 sectors_to_load = BFS(start, end, map_)
                # sectors_to_load = dijkstra_path(start, end, map_)
@@ -250,15 +256,17 @@ class Player:
 
             for sector in sectors_to_load:
 
-                if self.fuel-map_[self.current_sector].connected_sectors[sector] > 0:
+                old_sector = self.player_sector()
+
+                if self.fuel-old_sector.connected_sectors[sector] > 0:
 
                     time.sleep(.4)
                    # Subtract the cost to travel to the sector
 
                     self.fuel -= \
-                        map_[self.current_sector].connected_sectors[sector]
+                        old_sector.connected_sectors[sector]
 
-                    self.player_sector().ships_in_sector.remove(self)
+                    old_sector.ships_in_sector.remove(self)
 
                     self.current_sector = sector
 
@@ -367,9 +375,10 @@ class Sector:
     def __init__(self, sector_number, ports_in_sector=None, connected_sectors=None, deployed_items=[], debris_percent=0, ships_in_sector=[], game_sectors_total=1_000):
 
         self.sector = sector_number
-        self.deployed_items = deployed_items
+        # List of items players have placed in the sector
+        self.deployed_items = deployed_items.copy()
         self.debirs_percent = debris_percent
-        self.ships_in_sector = ships_in_sector
+        self.ships_in_sector = ships_in_sector.copy()
 
         if ports_in_sector == None and sector_number != 1:
             self.ports = self.generate_ports()
@@ -435,7 +444,7 @@ class Sector:
 
         if process_events:
             # Deal with deployables and enviromental hazards
-            pass
+            self.sector_events(player)
 
         print(prompt_breaker)
 
@@ -509,12 +518,20 @@ class Sector:
 
         for deployable in self.deployed_items:
 
-            if isinstance(deployable, Limpet):
+            friendly = True if victim == deployable.owner\
+                or (deployable.owner.corporation == victim.corporation
+                    and deployable.owner.corporation != None
+                    and victim.corporation != None)\
+                else False
 
-                victim.attached_limpets.append(
-                    Limpet(self.sector, victim.username, deployable.owner_name))
+            if isinstance(deployable, Limpet) and not friendly:
 
-                deployable.edit_amount_in_sector(deployable.owner_name, -1)
+                new_limpet = Limpet(self.sector, victim, deployable.owner)
+
+                victim.attached_limpets.append(new_limpet)
+                deployable.owner.tracked_limpets.append(new_limpet)
+
+                deployable.edit_amount_in_sector(-1, True)
 
 
 class TradePort:
@@ -1022,11 +1039,12 @@ def default_player_properties(sector_total):
     corporation = None
 
     attached_limpets = []
+    tracked_limpets = []
 
     turns_remaining, score, total_holds, credits, starting_sector = 10_000, 0, 3_000, 20_000, random.randint(
         1, sector_total)
 
-    return deployed_items, undeployed, cargo, corporation, attached_limpets, turns_remaining, score, total_holds, credits, starting_sector
+    return deployed_items, undeployed, cargo, corporation, attached_limpets, turns_remaining, score, total_holds, credits, starting_sector, tracked_limpets
 
 
 if __name__ == "__main__":
@@ -1035,12 +1053,12 @@ if __name__ == "__main__":
     map_ = generate_map(total_sectors)
 
     deployed_items, undeployed, cargo, corporation, attached_limpets,\
-        turns_remaining, score, total_holds, credits, starting_sector \
+        turns_remaining, score, total_holds, credits, starting_sector, tracked_limpets \
         = default_player_properties(total_sectors)
 
     # Ideally these should be retrieved from a databse of some sort
     user = Player("Reshui", starting_sector, credits, total_holds,
-                  turns_remaining, score, undeployed, cargo, deployed_items, corporation, attached_limpets)
+                  turns_remaining, score, undeployed, cargo, deployed_items, corporation, attached_limpets, tracked_limpets)
 
     current_sector = user.player_sector()
 
