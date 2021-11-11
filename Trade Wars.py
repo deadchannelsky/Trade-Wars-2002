@@ -9,10 +9,29 @@ import collections
 
 prompt_breaker = "============================================================================"
 
+default_deployed = {'Limpets': {}, "Mines": {},
+                    "Warp Disruptors": {}, "Fighters": {}}
+
+default_undeployed = dict.fromkeys(default_deployed.keys(), 0)
+
+default_undeployed.update(
+    {"Photon Ammo": 0, "Planet Crackers": 0, "Planet Generators": 0})
+
+default_cargo = {'Ore': [], "Organics": [],
+                 "Equipment": [], 'Armor': [], "Batteries": []}
+
+
+class Action(Enum):
+    previous_menu = 0
+    buy = 1
+    sell = 2
+
 
 class Ship:
 
-    def __init__(self, total_cargo_holds, warp_cost, cargo, attached_limpets, useable_items, model, current_sector, ship_name, owner_name, cloak_enabled):
+    def __init__(self, total_cargo_holds, warp_cost, cargo, attached_limpets, useable_items,
+                 model, current_sector, ship_name, cloak_enabled,
+                 health, owner_in_ship, warp_drive_available, owner=None):
         self.total_cargo_holds = total_cargo_holds
         self.warp_cost = warp_cost            # How much it costs to warp between sectors
         self.cargo = cargo                    # Commodities or colonists
@@ -20,14 +39,88 @@ class Ship:
         self.useable_items = useable_items    # Unused items
         self.model = model                    # Ship class name
         self.current_sector = current_sector
-        self.owner_name = owner_name
         self.ship_name = ship_name
         self.cloak_enabled = cloak_enabled
+        self.health = health
+        self.owner_in_ship = owner_in_ship
+        self.owner = owner
+        self.warp_drive_available = warp_drive_available
+        self.destroyed = False
 
         initialized_sector = map_[self.current_sector].ships_in_sector
 
         if not self in initialized_sector:
             initialized_sector.append(self)
+
+    def move_sectors(self, destination=None):
+
+        start = self.current_sector
+
+        print(f'Current Sector:\t{start}')
+
+        # Prompt user for a valid destination or to exit the menu
+        while True:
+
+            if destination == None or not destination in range(1, game.total_sectors+1):
+
+                try:
+                    print("Press 0 to return to the previous menu")
+                    end = int(
+                        input("Enter target sector (1-{})> ".format(game.total_sectors)))
+                    break
+                except:
+                    print("Please input a number.")
+            else:
+                end = destination
+                break
+
+        if end == 0:  # If destination sector isn't given, re-display the current sector
+            self.ship_sector().load_sector(
+                self, lessen_fighter_response=False, process_events=False)
+            return
+
+        elif end in range(1, game.total_sectors+1):
+
+            if not end in self.ship_sector().connected_sectors:
+                # More than 1 warp required to reach the destination
+                sectors_to_load = BFS(start, end, map_)
+            else:
+                sectors_to_load = [end]
+
+            print('Path: ' + " > ".join([str(element)
+                                        for element in [self.current_sector] + sectors_to_load]))
+
+            print(prompt_breaker)
+
+            for sector in sectors_to_load:
+
+                old_sector = self.ship_sector()
+
+                # old_sector.connected_sectors[sector] > 0:
+                if self.owner.turns_remaining-self.warp_cost > 0:
+
+                    lessen_fighter_response = True if sector != end else False
+
+                    time.sleep(.4)
+                    self.owner.turns_remaining -= self.warp_cost
+
+                    old_sector.ships_in_sector.remove(self)
+
+                    self.current_sector = sector
+
+                    new_sector = self.ship_sector()
+
+                    new_sector.ships_in_sector.append(self)
+
+                    new_sector.load_sector(
+                        self.owner, lessen_fighter_response, process_events=True)
+
+                else:
+                    print("Not enough Fuel.")
+                    break
+
+        else:
+            print("Input a valid number.")
 
     def holds_available(self):
 
@@ -36,26 +129,138 @@ class Ship:
 
         return self.total_cargo_holds-holds_used
 
-    def update_attached_limpets(self):
-        for limpet in self.attached_limpets:
-            limpet.change_sector(self.current_sector)
-
     def show_cargo(self):
 
-        print("Current Cargo Manifest")
+        print("Current Cargo Manifest\n")
 
         for key, quantity in self.cargo.items():
+
             print(f"{key}: {quantity}")
 
-        time.sleep(.3)
+        time.sleep(1)
 
-        print(prompt_breaker)
+        print("\n"+prompt_breaker)
 
+    def return_cargo_quantity(self, item):
+        return sum([quantity[0] for quantity in self.cargo[item]])
 
-class Action(Enum):
-    previous_menu = 0
-    buy = 1
-    sell = 2
+    def mine_interactions(self, mines):
+
+        mine_damage = 250
+        armor_mitigation = 250
+        shield_mitigation = 1000
+
+        mines_used = 1/8 * mines.quantity
+
+        if mines_used == 0:
+            mines_used = 1
+
+        mines.edit_amount_in_sector(
+            mines_used, attaching_limpet_to_hull=False)
+
+        induced_damage = mines_used * mine_damage
+
+        damage_mitigation = self.shields * shield_mitigation + \
+            self.return_cargo_quantity(
+                "Armor")*armor_mitigation
+
+        damage_to_ship = induced_damage-damage_mitigation
+
+        if damage_to_ship > 0:
+            # Not all damage could be mitigated
+            self.health -= damage_to_ship
+            self.shields = 0
+            self.cargo["Armor"].clear()
+            # Test if ship was destroyed
+            if self.health <= 0:
+                self.ship_destroyed(mines.owner, True, False, False)
+
+        else:
+            # All damage mitigated
+            damage_remaining = induced_damage
+
+            if self.shields > 0:    # If the ship has shields
+
+                shields_consumed = round(
+                    damage_remaining / shield_mitigation, 2)
+
+                if shields_consumed > self.shields:
+                    damage_remaining -= (self.shields * shield_mitigation)
+                    self.shields = 0
+                else:
+                    self.shields -= shields_consumed
+                    damage_remaining = 0
+
+            if damage_remaining > 0 and self.return_cargo_quantity("Armor") > 0:
+
+                armor_consumed = damage_remaining // armor_mitigation
+                self.cargo["Armor"] -= armor_consumed
+
+    def limpet_interactions(self, limpets):
+
+        new_limpet = Limpet(self, limpets.owner, True)
+
+        limpets.edit_amount_in_sector(-1,
+                                      attaching_limpet_to_hull=True)
+
+        self.attached_limpets.append(new_limpet)
+
+        limpets.owner.tracked_limpets.append(new_limpet)
+
+    def ship_destroyed(self, destroyer, mines, fighters, sci_fi):
+
+        self.ship_sector().ships_in_sector.remove(self)
+        self.clear_limpets()
+
+        if self.owner_in_ship:
+
+            if self.model == "Escape Pod":
+                self.owner.ship = None
+                escape_pod_destroyed = True
+                '''!    !   !   !   !'''
+                # Deny turns for the rest of the day
+            else:
+                # Place user in an Escape Pod in a random sector
+
+                escape_pod_warp = random.randint(1, total_sectors)
+
+                self.owner.ship = create_new_ship(
+                    0, self.owner, escape_pod_warp)
+
+            if not escape_pod_destroyed:
+
+                if mines:
+                    score_transfer = self.owner.score * .10
+                    transaction = self.owner.credits * .05
+                elif fighters:
+                    score_transfer = self.owner.score * .25
+                    transaction = self.owner.credits * .10
+                elif sci_fi:
+                    score_transfer = self.owner.score * .29
+                    transaction = 0
+
+                destroyer.score += score_transfer
+                self.owner.score -= score_transfer
+
+                if transaction > 0:
+                    destroyer.credits += transaction
+                    self.owner.credits -= transaction
+
+        self.destroyed = True
+
+    def ship_sector(self):
+
+        return map_[ship.current_sector]
+
+    def clear_limpets(self):
+        # Mainly to ensure that references to the limpet are removed and if not\
+        # then it is inactive
+        if len(self.attaached_limpets) > 0:
+            for limpet in self.attached_limpets:
+                limpet.active = False
+            self.attached_limpets.clear()
+            # for player in game.players.values:
+            #   player.deployed["Limpets"].remove(limpet)
 
 
 class Deployable:
@@ -83,6 +288,7 @@ class Deployable:
             self.quantity -= quantity
 
             if not attaching_limpet_to_hull:
+                # If the owner of the item is retrieveing them from a sector
                 self.owner.ship.useable_items[self.type_] += quantity
 
         if self.quantity <= 0:  # If the deployable no longer has any of itself in the sector
@@ -97,26 +303,29 @@ class Deployable:
 
 
 class Limpet:
-    '''Attaches to hulls and reports positioning to owner'''
+    '''Attaches to ship hulls and reports positioning to owner.'''
 
-    def __init__(self, tracked_ship, owner):
+    def __init__(self, tracked_ship, owner, active):
         self.tracked_ship = tracked_ship
         self.owner = owner
+        self.active = active
 
     def current_location(self):
-        return self.tracked_ship.current_sector
+
+        if self.active:
+            return self.tracked_ship.current_sector
 
 
 class Player:
 
-    def __init__(self, name, current_sector, player_credits,
+    def __init__(self, name, player_credits,
                  turns_remaining, score, deployed, corporation, tracked_limpets, ship):
 
         self.name = name
         self.corporation = corporation
-        self.current_sector = current_sector
+        #self.current_sector = current_sector
         self.credits = player_credits
-        self.fuel = turns_remaining
+        self.turns_remaining = turns_remaining
         self.score = score
         self.ship = ship
 
@@ -125,34 +334,33 @@ class Player:
         self.tracked_limpets = tracked_limpets
 
     def use_item(self, item, quantity, mode=None, changing_quantity=False, changing_properties=False):
-        '''
-        Use,edit or add a deployable to the current sector.
-        '''
+        '''Use,edit or add a useble item to the current sector.'''
         target_sector = self.player_sector()
+
+        ship_sector = self.ship.current_sector
 
         if item in ["Limpets", "Mines", "Fighters", "Warp Disruptors"]:
             # Mines,Limpets,Warp disruptors,Fighters
 
             # Check if player already has deployables of that type in the sector
-            if self.current_sector in self.deployed[item]:
+            if self.ship.current_sector in self.deployed[item]:
                 # You have to be in the sector to edit deployables
-                deployed_item = self.deployed[item][self.current_sector]
+                deployed_item = self.deployed[item][ship_sector]
 
                 if changing_quantity:
 
-                    deployed_item.edit_amount_in_sector(
-                        self.name, quantity, False)
+                    deployed_item.edit_amount_in_sector(quantity, False)
 
                 elif changing_properties:
                     # Used for editing deployed fighter status
                     pass
             else:
                 placed_deployable = Deployable(
-                    self, item, self.current_sector, quantity, mode)
+                    self, item, ship_sector, quantity, mode)
 
                 target_sector.place_deployable_in_sector(placed_deployable)
 
-                self.deployed[item][self.current_sector] = placed_deployable
+                self.deployed[item][ship_sector] = placed_deployable
 
         elif item in ["Planet Crackers", "Photon Ammo"]:
 
@@ -172,7 +380,7 @@ class Player:
         elif item == "Planet Generators":
             target_sector.create_planet(self)
 
-        if not changing_quantity:  # I f not modifying the quantity of an already existing deployable
+        if not changing_quantity:  # If not modifying the quantity of an already existing deployable
             self.ship.useable_items[item] -= quantity
 
     def add_to_avoid_list(self, new_sector):
@@ -180,15 +388,16 @@ class Player:
         pass
 
     def check_input(self, action):
-
+        '''Function is called whenever a player creates a keyboard input while sitting in a sector outside of a planet or port'''
         print(prompt_breaker)
 
-        if action == "":
+        if action == "":  # User pressed enter
             pass
 
         elif action[0] == 'm':
             # Player wants to move sectors
             if len(action) > 1:
+                # Possibly more input after the letter m
                 dest = action[1:].replace(" ", "")
                 if dest.isdigit():
                     dest = int(dest)
@@ -203,95 +412,28 @@ class Player:
 
                 dest = None
 
-            self.move_sectors(dest)
+            self.ship.move_sectors(dest)
 
         elif action[0] == "c":
+            # User wants to view ship cargo
             self.ship.show_cargo()
-            self.player_sector.load_sector(
-                self, currently_warping=False, process_events=False)
+            self.player_sector().load_sector(
+                self, lessen_fighter_response=False, process_events=False)
         elif action[0] == "u":
+            # User wants to view items available for use
             self.item_selection()
+
         elif action.isdigit():  # Used for entering Ports or Planets
 
             action = int(action)
 
             try:
-                sector_obj = map_[self.current_sector]
+                sector_obj = self.player_sector()
                 sector_obj.ports[action].enter_port(self)
                 sector_obj.load_sector(
-                    self, currently_warping=True, process_events=True)
+                    self, lessen_fighter_response=True, process_events=False)
             except KeyError:
                 pass
-
-    def move_sectors(self, destination=None):
-
-        start = self.current_sector
-
-        print(f'Current Sector:\t{start}')
-
-        # Prompt user for a valid destination or to exit the menu
-        while True:
-
-            if destination == None or not destination in range(1, game.total_sectors+1):
-
-                try:
-                    print("Press 0 to return to the previous menu")
-                    end = int(
-                        input("Enter target sector (1-{})> ".format(game.total_sectors)))
-                    break
-                except:
-                    print("Please input a number.")
-            else:
-                end = destination
-                break
-
-        if end == 0:
-            self.player_sector().load_sector(
-                self, currently_warping=False, process_events=False)
-            return
-
-        elif end in range(1, game.total_sectors+1):
-
-            if not end in self.player_sector().connected_sectors:
-                # More than 1 warp required to reach the destination
-                sectors_to_load = BFS(start, end, map_)
-            else:
-                sectors_to_load = [end]
-
-            print('Path: ' + " > ".join([str(element)
-                                        for element in [self.current_sector] + sectors_to_load]))
-
-            print(prompt_breaker)
-
-            for sector in sectors_to_load:
-
-                old_sector = self.player_sector()
-
-                # old_sector.connected_sectors[sector] > 0:
-                if self.fuel-self.ship.warp_cost > 0:
-
-                    lessen_fighter_response = True if sector != end else False
-
-                    time.sleep(.4)
-                    self.fuel -= self.ship.warp_cost
-
-                    old_sector.ships_in_sector.remove(self.ship)
-
-                    self.current_sector, self.ship.current_sector = sector
-
-                    new_sector = self.player_sector()
-
-                    new_sector.ships_in_sector.append(self.ship)
-
-                    new_sector.load_sector(
-                        self, lessen_fighter_response, process_events=True)
-
-                else:
-                    print("Not enough Fuel.")
-                    break
-
-        else:
-            print("Input a valid number.")
 
     def item_selection(self):
 
@@ -348,7 +490,11 @@ class Player:
         self.player_sector().load_sector(self, True, False)
 
     def player_sector(self):
-        return map_[self.current_sector]
+        return map_[self.ship.current_sector]
+
+    def assign_ship(self, ship):
+        ship.owner = self
+        self.ship = ship
 
 
 class Planet:
@@ -416,7 +562,7 @@ class Sector:
             [str(element) for element in list(self.connected_sectors.keys())])
 
         print(
-            f'\n[Current Sector]: {self.sector}\t\t\t[Fuel remaining]: {player.fuel:,}\n ')
+            f'\n[Current Sector]: {self.sector}\t\t\t[Fuel remaining]: {player.turns_remaining:,}\n ')
 
         planets = self.planets_in_sector()
 
@@ -448,14 +594,11 @@ class Sector:
             ship.ship_name for ship in self.ships_in_sector if not ship.cloak_enabled]
 
         if len(ships) > 0:
-            print(ships)
-
-        if len(player.ship.attached_limpets) > 0:
-            player.ship.update_attached_limpets(self.sector)
+            print(str(ships)+"\n")
 
         if process_events:
             # Deal with deployables and enviromental hazards
-            self.sector_events(player)
+            self.sector_events(player, lessen_fighter_response)
 
         print(prompt_breaker)
 
@@ -506,7 +649,7 @@ class Sector:
             planet_type = random.randint(1, 9)
             citadel = None
 
-            new_planet = Planet(self.sector, planet_owner, planet_type, input("Enter planet name:\t"),
+            new_planet = Planet(planet_owner, self.sector, planet_type, input("Enter planet name:\t"),
                                 fighters, planet_population, planetary_shields, planet_inventory, citadel)
 
             self.place_deployable_in_sector(new_planet)
@@ -525,7 +668,7 @@ class Sector:
 
         return planet_list
 
-    def sector_events(self, victim):
+    def sector_events(self, victim, mitigate_fighters):
 
         for deployable in self.deployed_items:
 
@@ -539,20 +682,22 @@ class Sector:
 
                 if deployable.type == "Limpets":
 
-                    new_limpet = Limpet(victim.ship, deployable.owner)
-
-                    deployable.edit_amount_in_sector(-1, True)
-
-                    victim.ship.attached_limpets.append(new_limpet)
-
-                    deployable.owner.tracked_limpets.append(new_limpet)
+                    victim.ship.limpet_interaction(deployable)
 
                 elif deployable.type == "Mines":
-                    pass
+
+                    victim.ship.mine_interactions(deployable)
+
                 elif deployable.type == "Warp Disruptors":
+
+                    # Increase turn count cost
                     pass
+
                 elif deployable.type == "Fighters":
-                    pass
+                    if mitigate_fighters:
+                        pass
+                    else:
+                        pass
 
 
 class TradePort:
@@ -708,7 +853,7 @@ class TradePort:
 
         if len(available_for_purchase) == 0:  # Check if trades aren't possible
 
-            items_on_ship = player.ship.holds_available() != player.ship.cargo_holds
+            items_on_ship = player.ship.holds_available() != player.ship.total_cargo_holds
 
             if not buying:
 
@@ -1045,30 +1190,44 @@ def generate_map(total_sectors=100):
     return current_map
 
 
-def default_player_properties(sector_total, player_name):
+def create_new_ship(new_ship_class, owner, spawn_sector):
 
-    deployed_items = {'Limpets': {}, "Mines": {},
-                      "Warp Disruptors": {}, "Fighters": {}}
+    attached_limpets = []
 
-    undeployed = dict.fromkeys(deployed_items.keys(), 1)
-    undeployed.update(
-        {"Photon Ammo": 1, "Planet Crackers": 1, "Planet Generators": 1})
+    cargo = default_cargo.copy()
+    ship_name = "Unknown Vessel"
+    items = default_undeployed.copy()
 
-    cargo = {'Ore': [], "Organics": [],
-             "Equipment": [], 'Armor': [], "Batteries": []}
+    if new_ship_class == 0:   # Escape Pod for when ships are destroyed
+        total_holds = 10
+        warp_cost = 0
+        ship_health = 500
+        model = "Escape Pod"
+        warp_drive_available = False
+
+    elif new_ship_class == 1:  # Default starting ship
+        total_holds = 1_000
+        warp_cost = 3
+        ship_health = 50_000
+        model = "Class I"
+        warp_drive_available = False
+
+    return Ship(total_holds, warp_cost, cargo, attached_limpets, items, model,
+                spawn_sector, ship_name, False, ship_health, True,  warp_drive_available, owner)
+
+
+def default_player_properties(sector_total):
+
+    deployed_items = default_deployed.copy()
 
     corporation = None
 
-    attached_limpets = []
     tracked_limpets = []
 
-    turns_remaining, score, total_holds, credits, starting_sector = 10_000, 0, 3_000, 20_000, random.randint(
+    turns_remaining, score, credits, starting_sector = 10_000, 0, 20_000, random.randint(
         1, sector_total)
 
-    player_ship = Ship(total_holds, -1, cargo, attached_limpets,
-                       undeployed, "Class I", starting_sector, "Unknown", player_name, False)
-
-    return deployed_items, corporation,  turns_remaining, score, credits, starting_sector, tracked_limpets, player_ship
+    return deployed_items, corporation,  turns_remaining, score, credits, starting_sector, tracked_limpets
 
 
 if __name__ == "__main__":
@@ -1078,19 +1237,24 @@ if __name__ == "__main__":
 
     map_ = generate_map(total_sectors)
 
-    deployed_items, corporation, turns_remaining, score, credits, starting_sector, tracked_limpets, ship \
-        = default_player_properties(total_sectors, player_name)
+    deployed_items, corporation, turns_remaining, score, credits, starting_sector, tracked_limpets \
+        = default_player_properties(total_sectors)
 
-    # Ideally these should be retrieved from a databse of some sort
-    user = Player(player_name, starting_sector, credits,
-                  turns_remaining, score, deployed_items, corporation,  tracked_limpets, ship)
+    ship = create_new_ship(new_ship_class=1, owner=None,
+                           spawn_sector=starting_sector)
+    # Ideally these should all be retrieved from a databse of some sort
+    user = Player(player_name,  credits,
+                  turns_remaining, score, deployed_items, corporation,  tracked_limpets, None)
 
-    user.player_sector().load_sector(
-        user, lessen_fighter_response=False, process_events=False)
+    # Assigns the ship to the owner AND designates the player as the owner of the ship
+    user.assign_ship(ship)
 
     game_deployables = {}
 
-    game = Game(map_, {"Reshui": user}, game_deployables)
+    game = Game(map_, {player_name: user}, game_deployables)
+
+    user.player_sector().load_sector(
+        user, lessen_fighter_response=False, process_events=False)
 
     while True:
 
