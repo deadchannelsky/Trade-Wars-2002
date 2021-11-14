@@ -5,8 +5,8 @@ import time
 import collections
 import pandas as pd
 import heapq
-#import threading
-#import socket
+# import threading
+# import socket
 
 prompt_breaker = "=" * 96
 
@@ -523,7 +523,7 @@ class Pilot:
 
         self.name = name
         self.corporation = corporation
-        #self.current_sector = current_sector
+        # self.current_sector = current_sector
         self.credits = player_credits
         self.turns_remaining = turns_remaining
         self.score = score
@@ -644,6 +644,12 @@ class Pilot:
         '''Adds a given deployable to a pilot's deployed list for tracking'''
         # Create dictionary value using the item type and current sector as a key. Function is called when a new instance of Deployable is made
         self.deployed[deployable.type_][deployable.sector_num] = deployable
+
+    def claim_ship(self, ship):
+        ship.owner = self
+
+    def display_deployed(self):
+        pass
 
 
 class NPC:
@@ -859,14 +865,20 @@ class Sector:
             pass
 
     def deployables_belonging_to_player_count(self, player):
+        '''Returns a dictionary containing how much of each type of deployable object
+         a player has placed in a sector'''
 
         deployed_in_sector = dict.fromkeys(default_undeployed, 0)
 
         for deployable in self.deployed_items:
             if deployable.owner == player:
-                deployed_in_sector[deployable.type_] = deployable.quantity
+                deployed_in_sector[deployable.type_] += deployable.quantity
 
         return deployed_in_sector
+
+    def density_report(self):
+        '''Returns a pandas DataFrame that contains density values for a sector.'''
+        pass
 
 
 class TradePort:
@@ -1250,75 +1262,78 @@ def breadth_first_search(start, end, current_map):
     '''
     queue = collections.deque([start])
     visited = set()
-    pred = {}
-    target_found = False
 
-    while queue and not target_found:
-        node = queue.popleft()  # FIFO
+    nodes_reached = {start}
+    pred = {}
+    end_node_found = False
+
+    while queue and not end_node_found:
+        node = queue.popleft()
         visited.add(node)
-        for child_node in current_map[node].connected_sectors:
+
+        for connected_node in current_map[node].connected_sectors:
             # If child node is in visited then a node closer to the start is already connected
-            if not child_node in visited:
-                pred[child_node] = node
-                if child_node == end:
-                    target_found = True
+            # Checking if in nodes_reached is an optimization step to avoid repeatedly overwriting and adding the same node to the queue
+            if not connected_node in visited and not connected_node in nodes_reached:
+
+                pred[connected_node] = node
+
+                if connected_node == end:
+                    end_node_found = True
                     break
                 else:
-                    queue.append(child_node)
+                    nodes_reached.add(connected_node)
+                    queue.append(connected_node)
 
-    child_node = end
+    connected_node = end
 
     path = collections.deque([])
 
     try:
-        while child_node != start:
-            path.appendleft(child_node)
-            child_node = pred[child_node]
+        while connected_node != start:
+            path.appendleft(connected_node)
+            connected_node = pred[connected_node]
     except KeyError:
         return []
 
     return list(path)
 
 
-def dijkstra_path(start_point, end_point, current_map):
+def dijkstra_path(start, end, current_map):
     '''
     Dijkstra's algorithm used to find shortest fuel cost path. 
     '''
-    data = dict.fromkeys(current_map, np.inf)
+    node_cost = dict.fromkeys(current_map, np.inf)
 
-    n_map = {sector: current_map[sector].connected_sectors.copy()
-             for sector in current_map}
+    node_cost[start], destination_cost, predecessor, visited = 0, np.inf, dict(), set()
+    heap = [(0, start)]
+    heapq.heapify(heap)
 
-    data[start_point], predecessor, destination_cost = 0, {}, np.inf
-    hq = [(0, start_point)]
-    heapq.heapify(hq)
-    visited = set()
+    while heap:  # While there are still nodes to visit
 
-    while hq:  # While there are still nodes to visit
+        min_node_distance, min_node = heapq.heappop(heap)
 
-        parent_cost, min_node = heapq.heappop(hq)
+        for connected_node, edge_weight in current_map[min_node].connected_sectors.items():
 
-        for connected_node, child_cost in n_map[min_node].items():
+            path_cost = min_node_distance + edge_weight
+            # Don't bother adding nodes to the heap if their cost is greater than the cost to a found destination node
+            if path_cost < node_cost[connected_node] and path_cost < destination_cost:
 
-            path_cost = parent_cost + child_cost
+                node_cost[connected_node], predecessor[connected_node] = path_cost, min_node
 
-            if path_cost < data[connected_node]:
-
-                if connected_node == end_point and path_cost < destination_cost:
+                if connected_node == end:
+                    # Don't place destination node in the heap
                     destination_cost = path_cost
 
-                data[connected_node], predecessor[connected_node] = path_cost, min_node
-
-                if not connected_node in visited and path_cost < destination_cost:
-                    # Don't bother adding nodes to the heap if their cost is greater than the cost to a found destination node
-                    heapq.heappush(hq, (path_cost, connected_node))
+                elif not connected_node in visited:
+                    heapq.heappush(heap, (path_cost, connected_node))
         else:
             visited.add(min_node)
 
-    currentNode = end_point
+    currentNode = end
     path = collections.deque([])
 
-    while currentNode != start_point:
+    while currentNode != start:
         try:
             path.appendleft(currentNode)
             currentNode = predecessor[currentNode]
@@ -1326,7 +1341,7 @@ def dijkstra_path(start_point, end_point, current_map):
             print("Path not reachable")
             break
 
-    if data[end_point] != np.inf:   # If the endpoint is reachable
+    if node_cost[end] != np.inf:   # If the endpoint is reachable
         return list(path)
     else:
         return []
