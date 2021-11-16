@@ -802,10 +802,10 @@ class Pilot:
             self.choose_target()
         elif action[0] == "l":
             # land on planet if client presses the letter l l
-            pass 
+            pass
         elif action[0] == "?":
             return_instructions(self.connection)
-        elif action[0]=="v":
+        elif action[0] == "v":
             # prompt client for if they want to view deployables or known planets
             pass
 
@@ -1522,103 +1522,231 @@ class TradePort:
 
 class Game:
 
-    def __init__(self, chart, saved_players=None):
+    def __init__(self, total_sectors, chart=None, saved_players=None):
 
         if saved_players == None:
             self.saved_players = dict()
         else:
             self.saved_players = saved_players
 
-        self.chart = chart
-        self.total_sectors = len(chart)
+        if chart == None:
+            self.chart = self.generate_map(total_sectors)
+        else:
+            self.chart = chart
+
+        self.total_sectors = total_sectors
         self.active_players = dict()
 
     def add_player(self, new_player):
-        self.players[new_player.name] = new_player
+
+        self.saved_players[new_player.name] = new_player
 
     def player_is_active(self, player_name):
-
+        '''Returns True if the user is currently connected to the server.'''
         if player_name in self.active_players:
             return True
         else:
             return False
 
+    def get_login_details(self, conn):
 
-def join_all_sectors(current_map):
-    '''Depth First Search algorithm used to find all sectors reachable from sector 1
-    and then link those that are unreachable back into the primary cluster.
-    '''
-    map_partitions = {}
-    visited = set()
+        username_prompt = PROMPT_INPUT + "Enter Username >  "
+        password_prompt = PROMPT_INPUT + "Enter Password >  "
 
-    for root_sector in current_map:
+        prompt_for_username = True
+        account_designated = False
 
-        if not root_sector in visited:
+        while prompt_for_username:
 
-            visited.add(root_sector)
-            stack = [root_sector]
-            section = stack.copy()
+            try_differnet_username = False
 
-            # Depth First Search Algorithm to find sectors that are reachable from the root sector
-            while stack:
-                # While the stack isn't empty
-                queried_sector = stack.pop()  # Retrieve the most recently added item
+            try:
+                message_client(conn, username_prompt)
+                user_name = client_response(conn)
+            except OSError:
+                return False, None
+            # Name isn't currently in use by someone playing right now
+            if not self.player_is_active(user_name):
 
-                for connected_sector in current_map[queried_sector].connected_sectors:
+                if user_name in game.saved_players:
+                    # Get password
+                    login_data = game.saved_players[user_name]
 
-                    if not connected_sector in visited:
+                    while True:
+                        supplied_password = get_input(
+                            password_prompt, None, None, False, conn)
 
-                        visited.add(connected_sector)
-                        stack.append(connected_sector)
-                        section.append(connected_sector)
+                        if supplied_password == login_data[1]:
+                            pilot = login_data[0]
+                            account_designated = True
+                            prompt_for_username = False
+                            break
+                        elif supplied_password == "n":
+                            break
+                        elif supplied_password == "d":
+                            try_differnet_username = True
+                            break
+                        elif supplied_password == "e":
+                            return False, None
+                        else:
+                            message_client(
+                                conn, "Password is incorrect. Please try again or press 'n' to create a new character or 'e' to exit.")
 
-            map_partitions[len(map_partitions)] = section
+                if try_differnet_username:
+                    continue
+                elif not account_designated:
+                    pilot = self.create_basic_pilot(user_name)
+                    game.saved_players[pilot.name] = (pilot, get_input(
+                        "Enter New Password:\t", None, None, False, conn))
 
-    # Sectors aren't guaranteed to be loopable [A<>B<>C<>A]
-    # At minimum connected sectors are [A>B>C]
+                    account_designated = True
+                    prompt_for_username = False
 
-    # Sections that aren't reachable from sector 1 may have one or more one way connections \
-    # into the section containing sector 1
+            else:
+                message_client(conn, "Username is currently being used.")
+                try_differnet_username = True
 
-    if len(map_partitions) > 1:
-        # Return key for the largest section of the map
-        largest_section = sorted(
-            map_partitions, key=lambda x: len(map_partitions[x]))[-1]
+        if account_designated:
+            return True, pilot
 
-        for key, section in map_partitions.items():
+    def create_basic_pilot(self, player_name):
+        '''Returns a Pilot obeject with default properties.'''
 
-            if key != largest_section:
-                # May change to create tunnels depending on the number of disjoint sectors
-                # Choose a random sector to link to from the primary map
-                entry_sector = random.choice(
-                    map_partitions[largest_section])
-                linked_sector = random.choice(section)
+        deployed_items, corporation, turns_remaining, score, credits, tracked_limpets \
+            = self.default_player_properties()
 
-                current_map[entry_sector].connected_sectors[linked_sector] = 1
+        user = Pilot(player_name,  credits,
+                     turns_remaining, score, deployed_items, corporation,  tracked_limpets, None)
 
-    # Make all sectors bi-directional
-    for key, sector in current_map.items():
+        return user
 
-        for connection, cost in sector.connected_sectors.items():
+    def handle_client(self, conn):
+        '''Prompt client for user name then asssign a Pilot object then await client input.'''
 
-            current_map[connection].connected_sectors[key] = cost
+        account_designated = False
+        closing_connection = False
 
-    return current_map
+        account_designated, pilot = self.get_login_details(conn)
 
+        if account_designated:
 
-def generate_map(total_sectors=1000):
-    '''Generates a new map with sectors ranging from 1 upto total_sectors'''
-    # Keys will be sector numbers and will hold sector objects
-    current_map = {}
-    for current_sector in range(1, total_sectors+1):
-        # Each sector originally connects to 2 to 4 other sectors
-        current_map[current_sector] = Sector(
-            current_sector, game_sectors_total=total_sectors)
+            pilot.connection = conn
+            self.active_players[pilot.name] = conn
 
-    # Ensure that every sector is reachable
-    current_map = join_all_sectors(current_map)
+            print(f"{pilot.name} has logged in.")
 
-    return current_map
+            message_client(conn, prompt_breaker+'\n')
+
+            pilot.ship_sector().load_sector(
+                pilot, lessen_fighter_response=False, process_events=True)
+
+            while not closing_connection:
+                try:
+                    player_input = get_input(
+                        "Select Action <?> :\t", None, False, True, conn)
+
+                    if player_input == "0":
+                        closing_connection = True
+                    else:
+                        pilot.check_input(player_input)
+                except OSError:
+                    closing_connection = True
+            else:
+
+                del self.active_players[pilot.name]
+
+                pilot.connection = None
+
+                print(f"{pilot.name} has disconnected.")
+
+        conn.close()
+
+    def default_player_properties(self):
+
+        deployed_items = default_deployed.copy()
+
+        corporation = None
+
+        tracked_limpets = []
+
+        turns_remaining, score, credits, = 20_000, 0, 20_000
+
+        return deployed_items, corporation,  turns_remaining, score, credits,  tracked_limpets
+
+    def generate_map(self, total_sectors=1000):
+        '''Generates a new map with sectors ranging from 1 upto total_sectors'''
+        # Keys will be sector numbers and will hold sector objects
+        current_map = {}
+        for current_sector in range(1, total_sectors+1):
+            # Each sector originally connects to 2 to 4 other sectors
+            current_map[current_sector] = Sector(
+                current_sector, game_sectors_total=total_sectors)
+
+        # Ensure that every sector is reachable
+        current_map = self.join_all_sectors(current_map)
+
+        return current_map
+
+    def join_all_sectors(self, current_map):
+        '''Depth First Search algorithm used to find all sectors reachable from sector 1
+        and then link those that are unreachable back into the primary cluster.
+        '''
+        map_partitions = {}
+        visited = set()
+
+        for root_sector in current_map:
+
+            if not root_sector in visited:
+
+                visited.add(root_sector)
+                stack = [root_sector]
+                section = stack.copy()
+
+                # Depth First Search Algorithm to find sectors that are reachable from the root sector
+                while stack:
+                    # While the stack isn't empty
+                    queried_sector = stack.pop()  # Retrieve the most recently added item
+
+                    for connected_sector in current_map[queried_sector].connected_sectors:
+
+                        if not connected_sector in visited:
+
+                            visited.add(connected_sector)
+                            stack.append(connected_sector)
+                            section.append(connected_sector)
+
+                map_partitions[len(map_partitions)] = section
+
+        # Sectors aren't guaranteed to be loopable [A<>B<>C<>A]
+        # At minimum connected sectors are [A>B>C]
+
+        # Sections that aren't reachable from sector 1 may have one or more one way connections \
+        # into the section containing sector 1
+
+        if len(map_partitions) > 1:
+            # Return key for the largest section of the map
+            largest_section = sorted(
+                map_partitions, key=lambda x: len(map_partitions[x]))[-1]
+
+            for key, section in map_partitions.items():
+
+                if key != largest_section:
+                    # May change to create tunnels depending on the number of disjoint sectors
+                    # Choose a random sector to link to from the primary map
+                    entry_sector = random.choice(
+                        map_partitions[largest_section])
+                    linked_sector = random.choice(section)
+
+                    current_map[entry_sector].connected_sectors[linked_sector] = 1
+
+        # Make all sectors bi-directional
+        for key, sector in current_map.items():
+
+            for connection, cost in sector.connected_sectors.items():
+
+                current_map[connection].connected_sectors[key] = cost
+
+        return current_map
 
 
 def create_new_ship(new_ship_class, owner, spawn_sector):
@@ -1648,31 +1776,6 @@ def create_new_ship(new_ship_class, owner, spawn_sector):
 
     return Ship(total_holds, warp_cost, cargo, attached_limpets, items, model,
                 spawn_sector, ship_name, False, ship_health, True,  warp_drive_available, shields, owner)
-
-
-def default_player_properties():
-
-    deployed_items = default_deployed.copy()
-
-    corporation = None
-
-    tracked_limpets = []
-
-    turns_remaining, score, credits, = 20_000, 0, 20_000
-
-    return deployed_items, corporation,  turns_remaining, score, credits,  tracked_limpets
-
-
-def create_basic_pilot(player_name):
-    '''Returns a Pilot obeject with default properties.'''
-
-    deployed_items, corporation, turns_remaining, score, credits, tracked_limpets \
-        = default_player_properties()
-
-    user = Pilot(player_name,  credits,
-                 turns_remaining, score, deployed_items, corporation,  tracked_limpets, None)
-
-    return user
 
 
 def return_instructions(client):
@@ -1731,6 +1834,7 @@ def message_client(client, msg):
 
 def client_response(client):
     '''Function uses socket module to await response from client.'''
+    # get a buffered string that has the length of the next message at the start
     msg_length = client.recv(HEADER).decode(FORMAT)
 
     if msg_length:
@@ -1740,97 +1844,18 @@ def client_response(client):
         msg = client.recv(msg_length).decode(FORMAT)
 
         if msg == DISCONNECT_MESSAGE:
-            raise OSError  # Ensure that clients disconnect cleanly
+            raise OSError  # Ensure that clients disconnect cleanly via error handling in Game.handle_client()
         else:
             return msg
     else:
         raise OSError
 
 
-def get_login_details(conn):
-
-    username_prompt = PROMPT_INPUT + "Enter Username >  "
-    password_prompt = PROMPT_INPUT + "Enter Password >  "
-
-    prompt_for_username = True
-    account_designated = False
-
-    while prompt_for_username:
-
-        try:
-            message_client(conn, username_prompt)
-            user_name = client_response(conn)
-        except OSError:
-            return False, None
-        # Name isn't currently in use by someone playing right now
-        if not game.player_is_active(user_name):
-
-            if user_name in game.saved_players:
-                # Get password
-                pass
-            else:
-                pilot = create_basic_pilot(user_name)
-                game.saved_players[pilot.name] = pilot
-
-            account_designated = True
-            prompt_for_username = False
-
-        else:
-            message_client(conn, "Username is currently being used.")
-
-    if account_designated:
-        return True, pilot
-
-
-def handle_client(conn):
-    '''Prompt client for user name then asssign a Pilot object then await client input.'''
-
-    account_designated = False
-    closing_connection = False
-
-    account_designated, pilot = get_login_details(conn)
-
-    if account_designated:
-        print(f"{pilot.name} has logged in.")
-
-        pilot.connection = conn
-
-        game.active_players[pilot.name] = conn
-
-        message_client(conn, prompt_breaker+'\n')
-
-        pilot.ship_sector().load_sector(
-            pilot, lessen_fighter_response=False, process_events=True)
-
-        while not closing_connection:
-            try:
-                player_input = get_input(
-                    "Select Action <?> :\t", None, False, True, conn)
-
-                if player_input == "0":
-                    closing_connection = True
-                else:
-                    pilot.check_input(player_input)
-            except OSError:
-                closing_connection = True
-        else:
-
-            del game.active_players[pilot.name]
-
-            pilot.connection = None
-
-            print(f"{pilot.name} has disconnected.")
-
-    conn.close()
-
-
 if "__main__" == __name__:
 
     total_sectors = 1_000
 
-    map_ = generate_map(total_sectors)
-
-    game = Game(map_, None)
+    game = Game(total_sectors, chart=None, saved_players=None)
 
     local_network = LocalNetwork()
 
@@ -1845,6 +1870,6 @@ if "__main__" == __name__:
         conn, addr = server.accept()
 
         # handle_client(conn)
-        thread = threading.Thread(target=handle_client, args=(conn,))
+        thread = threading.Thread(target=game.handle_client, args=(conn,))
         thread.start()
         print(f"Active connections {threading.active_count()-1}")
