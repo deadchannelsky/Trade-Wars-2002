@@ -103,7 +103,7 @@ class Ship:
 
         if end == 0:  # If destination sector isn't given, re-display the current sector
             self.ship_sector().load_sector(
-                self, lessen_fighter_response=False, process_events=False)
+                self.owner, lessen_fighter_response=False, process_events=False)
             return
 
         elif end in range(1, game.total_sectors+1):
@@ -177,6 +177,7 @@ class Ship:
         mine_damage = 250
         armor_mitigation = 250
         shield_mitigation = 1000
+        conn = self.owner.connection
 
         mines_used = 1/8 * mines.quantity
 
@@ -203,9 +204,11 @@ class Ship:
             if self.health <= 0:
                 self.ship_destroyed(mines.owner, True, False, False)
             else:
-                print("You have lost all shield and armor units.")
+                message_client(
+                    conn, "You have lost all shield and armor units.")
         else:
             # All damage mitigated
+
             damage_remaining = induced_damage
 
             if self.shields > 0:    # If the ship has shields
@@ -216,17 +219,18 @@ class Ship:
                 if shields_consumed > self.shields:
                     damage_remaining -= (self.shields * shield_mitigation)
                     self.shields = 0
-                    print("Shield units have been depleted.")
+                    message_client(conn, "Shield units have been depleted.")
                 else:
-                    print(f"{shields_consumed} shield units have been consumed")
+                    message_client(
+                        conn, f"{shields_consumed} shield units have been consumed")
                     self.shields -= shields_consumed
                     damage_remaining = 0
 
             if damage_remaining > 0 and self.return_cargo_quantity("Armor") > 0:
 
                 armor_consumed = damage_remaining // armor_mitigation
-                print(
-                    f"{armor_consumed} armor units have been consumed from your cargo holds.")
+                message_client(conn,
+                               f"{armor_consumed} armor units have been consumed from your cargo holds.")
                 self.cargo["Armor"] -= armor_consumed
 
     def limpet_interactions(self, limpets):
@@ -530,7 +534,8 @@ class Ship:
 
     def disable_cloak(self):
         self.cloak_enabled = False
-        print("Your cloak has been disabled.")
+
+        message_client(self.owner.connection, "Your cloak has been disabled.")
 
     def breadth_first_search(self, start, end, current_map):
         '''
@@ -610,7 +615,6 @@ class Ship:
                 path.appendleft(connected_node)
                 connected_node = predecessor[connected_node]
             except KeyError:
-                #print("Path not reachable")
                 break
 
         if node_cost[end] != np.inf:   # If the endpoint is reachable
@@ -752,7 +756,6 @@ class Pilot:
                 dest = None
 
             self.ship.traverse_map(dest)
-
         elif action[0] == "c":
             # User wants to view ship cargo
             self.ship.show_cargo()
@@ -767,6 +770,8 @@ class Pilot:
         elif action[0] == "l":
             # land on planet
             pass
+        elif action[0] == "?":
+            return_instructions(self.connection)
         elif action.isdigit():  # Used for entering Ports or Planets
 
             if not self.ship_sector().foreign_fighters_in_sector(self):
@@ -1444,6 +1449,13 @@ class Game:
     def add_player(self, new_player):
         self.players[new_player.name] = new_player
 
+    def player_is_active(self, player_name):
+
+        if player_name in self.active_players:
+            return True
+        else:
+            return False
+
 
 def join_all_sectors(current_map):
     '''Depth First Search algorithm used to find all sectors reachable from sector 1
@@ -1576,6 +1588,16 @@ def create_basic_pilot(player_name):
     return user
 
 
+def return_instructions(client):
+    instructions = "Pressing 'm' will prompt you to choose a sector to travel to.\n\n \
+    Pressing 'm(number)' ex: m100 will plot a path to sector 100 can begin warping you along the plotted path.\n\n\
+    When you enter a sector, if available, pressing 1 or 2 will allow you to enter the selected port.\n\n\
+    Press <u> to view a list of your deployables in a sector or on your ship.\n\n\
+    Press <c> to view how much of each commodity you have in your cargo holds."
+
+    message_client(client, instructions)
+
+
 def get_input(prompt, allowed_range, return_number, return_lowered_string, conn):
     '''Tells client that an input is requested. Loops until exit conditions are met'''
     prompt = PROMPT_INPUT + prompt
@@ -1651,7 +1673,8 @@ def get_login_details(conn):
         except OSError:
             return False, None
         # Name isn't currently in use by someone playing right now
-        if user_name not in game.active_players:
+        if not game.player_is_active(user_name):
+
             if user_name in game.saved_players:
                 # Get password
                 pass
@@ -1678,10 +1701,14 @@ def handle_client(conn):
     account_designated, pilot = get_login_details(conn)
 
     if account_designated:
-
+        print(f"{pilot.name} has logged in.")
         local_network.connected_clients.append(conn)
+
         pilot.connection = conn
-        game.active_players.append(pilot.name)
+
+        game.active_players[pilot.name] = conn
+
+        message_client(conn, prompt_breaker+'\n')
 
         pilot.ship_sector().load_sector(
             pilot, lessen_fighter_response=False, process_events=True)
@@ -1698,9 +1725,12 @@ def handle_client(conn):
             except OSError:
                 closing_connection = True
         else:
-            game.active_players.remove(pilot.name)
-            pilot.connection = None
+
+            del game.active_players[pilot.name]
             local_network.connected_clients.remove(conn)
+            pilot.connection = None
+
+            print(f"{pilot.name} has disconnected.")
 
     conn.close()
 
