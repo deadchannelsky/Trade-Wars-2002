@@ -1318,18 +1318,17 @@ class TradePort:
         if not player_is_buying:
 
             if cargo_on_ship:
-                print(
-                    "Nothing in your inventory can be currently sold at this port.")
+                prompt = "Nothing in your inventory can be currently sold at this port."
             else:
-                print(
-                    "You don't have any cargo on your ship\n")
+                prompt = "You don't have any cargo on your ship\n"
         elif player_is_buying:
 
             if holds_are_full:
-                print(
-                    "You don't have any available cargo holds to store additional purchases with.")
+                prompt = "You don't have any available cargo holds to store additional purchases with."
             else:
-                print("This port isn't willing to purchase anything at this time.")
+                prompt = "This port isn't willing to purchase anything at this time."
+
+        send_client_message(conn, prompt)
 
         time.sleep(.5)
 
@@ -1661,7 +1660,7 @@ def handle_client(conn):
 
     if account_designated:
 
-        local_networkk.connected_clients.append(conn)
+        local_network.connected_clients.append(conn)
         pilot.connection = conn
         game.active_players.append(pilot.name)
 
@@ -1682,7 +1681,7 @@ def handle_client(conn):
         else:
             game.active_players.remove(pilot.name)
             pilot.connection = None
-            local_networkk.connected_clients.remove(conn)
+            local_network.connected_clients.remove(conn)
 
     conn.close()
 
@@ -1695,21 +1694,20 @@ if "__main__" == __name__:
 
     game = Game(map_, None)
 
-    local_networkk = LocalNetwork()
+    local_network = LocalNetwork()
 
-    server = local_networkk.server
+    server = local_network.server
 
     server.listen()  # server now listening for connections
 
-    print(f"Server is listening on {local_networkk.server_ip}")
+    print(f"Server is listening on {local_network.server_ip}")
 
     while True:
 
         conn, addr = server.accept()                # Waits until a new connection occurs
 
-        handle_client(conn)
-        #thread = threading.Thread(target=handle_client, args=(conn))
+        thread = threading.Thread(target=handle_client, args=(conn))
 
-        # thread.start()
+        thread.start()
 
-        #print(f"Active connections {threading.active_count()-1}")
+        print(f"Active connections {threading.active_count()-1}")
