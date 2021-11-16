@@ -8,7 +8,8 @@ HEADER = 64  # First message from clients will always be a message of 64 bytes t
 DISCONNECT_MESSAGE = "!DISCONNECT"
 PROMPT_INPUT = "!INPUT"
 
-SERVER = "10.0.0.162"  # IPV4 address for local host connections
+# "10.0.0.162"  # IPV4 address for local host connections
+SERVER = input("Enter server IP:\t\t")
 
 PORT = 5050
 ADDR = (SERVER, PORT)
@@ -38,7 +39,7 @@ while True:
     try:
         msg_length = client.recv(HEADER).decode(FORMAT)
     except ConnectionResetError:
-        print("\n\n\n\n\nServer is shutting down")
+        input("\n\n\n\n\nServer is shutting down. Press any key to continue.")
         break
 
     if msg_length:
@@ -56,5 +57,6 @@ while True:
         else:
             print(msg)
     else:
-        client.close()
         break
+
+client.close()
