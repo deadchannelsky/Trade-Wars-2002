@@ -181,6 +181,8 @@ class Ship:
 
         mines_used = 1/8 * mines.quantity
 
+        player_active = game.player_is_active(self.owner.name)
+
         if mines_used == 0:
             mines_used = 1
 
@@ -203,7 +205,7 @@ class Ship:
             # Test if ship was destroyed
             if self.health <= 0:
                 self.ship_destroyed(mines.owner, True, False, False)
-            else:
+            elif player_active:
                 message_client(
                     conn, "You have lost all shield and armor units.")
         else:
@@ -219,18 +221,23 @@ class Ship:
                 if shields_consumed > self.shields:
                     damage_remaining -= (self.shields * shield_mitigation)
                     self.shields = 0
-                    message_client(conn, "Shield units have been depleted.")
+                    if player_active:
+                        message_client(
+                            conn, "Shield units have been depleted.")
                 else:
-                    message_client(
-                        conn, f"{shields_consumed} shield units have been consumed")
+                    if player_active:
+                        message_client(
+                            conn, f"{shields_consumed} shield units have been consumed")
                     self.shields -= shields_consumed
                     damage_remaining = 0
 
             if damage_remaining > 0 and self.return_cargo_quantity("Armor") > 0:
 
                 armor_consumed = damage_remaining // armor_mitigation
-                message_client(conn,
-                               f"{armor_consumed} armor units have been consumed from your cargo holds.")
+
+                if player_active:
+                    message_client(conn,
+                                   f"{armor_consumed} armor units have been consumed from your cargo holds.")
                 self.cargo["Armor"] -= armor_consumed
 
     def limpet_interactions(self, limpets):
@@ -246,16 +253,20 @@ class Ship:
 
         limpets.owner.tracked_limpets.append(new_limpet)
 
-    def warp_disruptor_interactions(self):
+    def warp_disruptor_interactions(self, fleeing_battle=False):
         '''Warps ship to a random sector'''
 
         new_sector = self.current_sector
         while new_sector == self.current_sector:
             new_sector = random.randint(1, game.total_sectors)
 
-        prompt = f"You have encountered a Warp Disruptor in sector <{self.current_sector}>. Now arriving in sector <{new_sector}>"
+        if not fleeing_battle:
+            prompt = f"You have encountered a Warp Disruptor in sector <{self.current_sector}>. Now arriving in sector <{new_sector}>"
+        else:
+            prompt = "Your fighters have been expended. You have escaped to a random sector."
 
-        message_client(self.owner.connection, prompt)
+        if game.player_is_active(self.owner.name):
+            message_client(self.owner.connection, prompt)
 
         self.change_sector(new_sector, False)
 
@@ -535,7 +546,9 @@ class Ship:
     def disable_cloak(self):
         self.cloak_enabled = False
 
-        message_client(self.owner.connection, "Your cloak has been disabled.")
+        if game.player_is_active(self.owner.name):
+            message_client(self.owner.connection,
+                           "Your cloak has been disabled.")
 
     def breadth_first_search(self, start, end, current_map):
         '''
@@ -622,6 +635,35 @@ class Ship:
         else:
             return []
 
+    def attack_object(self, target):
+
+        if not self.ship_destroyed:
+            if isinstance(target, Ship):
+                self.attack_ship(target)
+            elif isinstance(target, Deployable) and target.type_ == "Fighters":
+                target.attack_ship(self)
+
+    def attack_ship(self, attacked_ship):
+
+        combatant_fighters = attacked_ship.useable_items["Fighters"]
+        friendly_fighters = self.useable_items["Fighters"]
+
+        if combatant_fighters > friendly_fighters:
+
+            attacked_ship.useable_items["Fighters"] -= combatant_fighters
+            self.ship_destroyed()
+
+        elif friendly_fighters > combatant_fighters:
+
+            self.useable_items["Fighters"] -= combatant_fighters
+            attacked_ship.ship_destroyed()
+
+        elif combatant_fighters == friendly_fighters:
+            self.useable_items["Fighters"] = 0
+            attacked_ship.useable_items["Fighters"] = 0
+            attacked_ship.warp_disruptor_interactions(True)
+            self.warp_disruptor_interactions(True)
+
 
 class Deployable:
     '''This class is for items that can be placed by a player/NPC and will persist until interacted with.'''
@@ -682,6 +724,9 @@ class Deployable:
 
         if ship.useable_items["Fighters"] < 0:
             ship.ship_destroyed(self.owner, False, True, False)
+
+    def return_fighter_mode(self):
+        return ["Offensive", "Defensive", "Taxing", "Disabled"][self.mode-1]
 
 
 class Limpet:
@@ -765,8 +810,7 @@ class Pilot:
             self.ship.item_selection()
             self.ship_sector().load_sector(self, True, False)
         elif action[0] == "a":
-            # Choose object to attack
-            pass
+            self.choose_target()
         elif action[0] == "l":
             # land on planet
             pass
@@ -855,8 +899,8 @@ class Pilot:
     def display_deployed(self):
         pass
 
-    def deployable_allegiance(self, deployable):
-        '''Returns whether or not a given deployable is hostile to the player.'''
+    def friendly_status(self, deployable):
+        '''Returns whether or not a given deployable or ship is hostile to the player.'''
 
         friendly = True if self is deployable.owner\
             or (deployable.owner.corporation == self.corporation
@@ -880,8 +924,50 @@ class Pilot:
 
         self.ship_sector().planets.append(new_planet)
 
-    def send_to_client(self, text):
-        pass
+    def choose_target(self):
+        '''Returns a DataFrame of available Targets'''
+
+        conn = self.connection
+
+        if self.ship.useable_items["Fighters"] > 0:
+
+            target_sector = self.ship_sector()
+
+            data = []
+            targets = []
+            for available_objects in [target_sector.ships_in_sector, target_sector.deployed_items]:
+
+                for target in available_objects:
+
+                    if not self.friendly_status(target):
+                        if isinstance(target, Ship) and target.cloak_enabled == False:
+                            data.append(
+                                [target.name, target.owner.name, target.owner_in_ship])
+                            targets.append(target)
+                        elif target.type_ == "Fighters":
+                            targets.append(target)
+                            data.append(
+                                [target.return_fighter_mode(), target.owner.name, target.quantity])
+
+            if data:
+                df = pd.DataFrame(data, columns=[
+                    "Target Name/Status", "Owner Name", "Player onboard/Quantity"], index=range(1, len(data)+1))
+                message_client(conn, df.to_string())
+
+                user_choice = get_input("Select an option or press 0 to exit. > ", range(
+                    len(df.index)+1), True, False, conn)
+
+                if user_choice == 0:
+                    return
+                else:
+                    target = targets[user_choice-1]
+                    self.ship.attack_object(target)
+            else:
+                message_client(
+                    conn, "There is nothing in this sector to attack.")
+        else:
+            message_client(
+                conn, "You don't have any Fighters on board to attack with")
 
 
 class NPC:
@@ -956,35 +1042,38 @@ class Sector:
     def load_sector(self, player, lessen_fighter_response, process_events):
         '''Displays interactabele objects and processes hazards.'''
 
-        prompt = []
-        nearby_sectors = self.connected_sectors_list()
+        if game.player_is_active(player.name):
 
-        prompt.append(
-            f'\n[Current Sector]: {self.sector}\t\t\t[Fuel remaining]: {player.turns_remaining:,}\n ')
+            prompt = []
+            nearby_sectors = self.connected_sectors_list()
 
-        if len(self.planets) > 0:
-            prompt.append(self.sector_planets_view())
+            prompt.append(
+                f'\n[Current Sector]: {self.sector}\t\t\t[Fuel remaining]: {player.turns_remaining:,}\n ')
 
-        if self.sector == 1:
-            pass
-            # Load TERRA
-        elif len(self.ports) > 0:
+            if len(self.planets) > 0:
+                prompt.append(self.sector_planets_view())
 
-            # Print the ports in the sector
-            for num, port in enumerate(self.ports.values()):
-                prompt.append(f'({num+1}) {port.name}\t{port.trade_status}')
+            if self.sector == 1:
+                pass
+                # Load TERRA
+            elif len(self.ports) > 0:
 
-        prompt.append(f'\n[Nearby Warps] : ' + nearby_sectors + '\n')
+                # Print the ports in the sector
+                for num, port in enumerate(self.ports.values()):
+                    prompt.append(
+                        f'({num+1}) {port.name}\t{port.trade_status}')
 
-        ships = [
-            ship.ship_name for ship in self.ships_in_sector if not ship.cloak_enabled]
+            prompt.append(f'\n[Nearby Warps] : ' + nearby_sectors + '\n')
 
-        if len(ships) > 0:
-            prompt.append(str(ships)+"\n")
+            ships = [
+                ship.ship_name for ship in self.ships_in_sector if not ship.cloak_enabled]
 
-        prompt.append(prompt_breaker)
+            if len(ships) > 0:
+                prompt.append(str(ships)+"\n")
 
-        message_client(player.connection, "\n".join(prompt))
+            prompt.append(prompt_breaker)
+
+            message_client(player.connection, "\n".join(prompt))
 
         if process_events:
             # Deal with deployables and enviromental hazards
@@ -1064,7 +1153,7 @@ class Sector:
 
         for deployable in self.deployed_items:
 
-            if not victim.deployable_allegiance(deployable):
+            if not victim.friendly_status(deployable):
 
                 if deployable.type == "Limpets":
                     victim.ship.limpet_interaction(deployable)
@@ -1106,7 +1195,7 @@ class Sector:
 
     def foreign_fighters_in_sector(self, player):
         for deployable in self.deployed_items:
-            if deployable.type_ == "Fighters" and player.deployable_allegiance(deployable) == False:
+            if deployable.type_ == "Fighters" and player.friendly_status(deployable) == False:
                 return True
 
     def connected_sectors_list(self):
@@ -1589,11 +1678,13 @@ def create_basic_pilot(player_name):
 
 
 def return_instructions(client):
-    instructions = "Pressing 'm' will prompt you to choose a sector to travel to.\n\n \
-    Pressing 'm(number)' ex: m100 will plot a path to sector 100 can begin warping you along the plotted path.\n\n\
+    '''Function is called when clients respoond with a ?'''
+
+    instructions = "< M > will prompt you for which sector you wish to travel to.\n\n \
+    < M(number) ex: m100 will plot a path to a given sector and begin warping your ship along the plotted path.\n\n\
     When you enter a sector, if available, pressing 1 or 2 will allow you to enter the selected port.\n\n\
-    Press <u> to view a list of your deployables in a sector or on your ship.\n\n\
-    Press <c> to view how much of each commodity you have in your cargo holds."
+    < U > displays a list of non-hostile deployables in the current sector and on your ship.\n\n\
+    < C > displays what's in your cargo holds."
 
     message_client(client, instructions)
 
