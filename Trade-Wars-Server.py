@@ -1438,13 +1438,13 @@ class Game:
     def __init__(self, chart, saved_players=None):
 
         if saved_players == None:
-            self.saved_players = {}
+            self.saved_players = dict()
         else:
             self.saved_players = saved_players
 
         self.chart = chart
         self.total_sectors = len(chart)
-        self.active_players = []
+        self.active_players = dict()
 
     def add_player(self, new_player):
         self.players[new_player.name] = new_player
@@ -1752,11 +1752,10 @@ if "__main__" == __name__:
     print(f"Server is listening on {local_network.server_ip}")
 
     while True:
-
-        conn, addr = server.accept()                # Waits until a new connection occurs
+        # Code waits until a new connection is received
+        conn, addr = server.accept()
 
         thread = threading.Thread(target=handle_client, args=(conn,))
-
         thread.start()
 
         print(f"Active connections {threading.active_count()-1}")
