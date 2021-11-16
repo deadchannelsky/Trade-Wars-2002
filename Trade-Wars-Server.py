@@ -90,10 +90,9 @@ class Ship:
         # Uncoded
 
         conn = self.owner.connection
-
         start = self.current_sector
 
-        send_client_message(conn, f'Current Sector:\t{start}')
+        message_client(conn, f'Current Sector:\t{start}')
 
         # Prompt user for a valid destination or to exit the menu
         if end == None or end not in range(game.total_sectors+1):
@@ -109,16 +108,24 @@ class Ship:
 
         elif end in range(1, game.total_sectors+1):
 
-            #shortest_fuel_path = dijkstra_path(start, end, game.chart)
-
             # If more than 1 warp required to reach the destination use BFS
-            sectors_to_load = breadth_first_search(start, end, game.chart)\
-                if not end in self.ship_sector().connected_sectors else [end]
+            if not end in self.ship_sector().connected_sectors:
 
-            plotted_path = " > ".join([str(element)
-                                       for element in [self.current_sector] + sectors_to_load])
+                sectors_to_load = self.breadth_first_search(
+                    start, end, game.chart)
+                #shortest_fuel_path = self.dijkstra_path(start, end, game.chart)
 
-            send_client_message(
+                if not sectors_to_load:
+                    message_client(conn, "Sector isn't reachabele.")
+                    return
+            else:
+                sectors_to_load = [end]
+
+            displayed_path = [str(element) for element in [
+                self.current_sector] + sectors_to_load]
+            plotted_path = " > ".join(displayed_path)
+
+            message_client(
                 conn, f'Path: {plotted_path}\n{prompt_breaker}')
 
             for sector in sectors_to_load:
@@ -130,7 +137,7 @@ class Ship:
                     self.owner.turns_remaining -= self.warp_cost
 
                 else:
-                    send_client_message(
+                    message_client(
                         conn, "You don't have enough turns remaining to complete this warp.")
                     break
 
@@ -159,7 +166,7 @@ class Ship:
 
         get_input(prompt, None, False, False, self.owner.connection)
 
-        send_client_message(self.owner.connection, prompt_breaker)
+        message_client(self.owner.connection, prompt_breaker)
 
     def return_cargo_quantity(self, item):
         '''Returns how much of a given item is held on the ship'''
@@ -244,7 +251,7 @@ class Ship:
 
         prompt = f"You have encountered a Warp Disruptor in sector <{self.current_sector}>. Now arriving in sector <{new_sector}>"
 
-        send_client_message(self.owner.connection, prompt)
+        message_client(self.owner.connection, prompt)
 
         self.change_sector(new_sector, False)
 
@@ -297,7 +304,7 @@ class Ship:
                     0, self.owner, escape_pod_warp)
 
             if send_prompt:
-                send_client_message(conn, "\n".join(client_msg))
+                message_client(conn, "\n".join(client_msg))
 
             if not escape_pod_destroyed:
 
@@ -403,7 +410,7 @@ class Ship:
             client_msg.append(utilities_df.to_string())
             client_msg.append("\n0 Exit\n")
 
-        send_client_message(conn, "\n".join(client_msg))
+        message_client(conn, "\n".join(client_msg))
         client_msg.clear()
 
         prompt = "Select an option from the list: \t"
@@ -509,8 +516,8 @@ class Ship:
 
                     self.owner.use_item(item, 1, True, False)
             else:
-                send_client_message(conn,
-                                    f"\n{item} aren't available with the given selection.\n")
+                message_client(conn,
+                               f"\n{item} aren't available with the given selection.\n")
                 time.sleep(1)
 
     def enable_cloak(self):
@@ -518,12 +525,98 @@ class Ship:
         Will hide user from Fighters in sector.'''
 
         self.cloak_enabled = True
-        send_client_message(
+        message_client(
             self.owner.connection, "Cloak activated. Cloak will remain active until you warp out of the sector.")
 
     def disable_cloak(self):
         self.cloak_enabled = False
         print("Your cloak has been disabled.")
+
+    def breadth_first_search(self, start, end, current_map):
+        '''
+        Use Breadth First Search to find shortest path for when travel cost between nodes are the same
+        Optimal to use this with previous clause if the number of sectors is large
+        '''
+        queue = collections.deque([start])
+        visited, previous_node, nodes_reached = set(), dict(), set()
+
+        while queue:
+
+            node = queue.popleft()
+            visited.add(node)
+
+            for connected_node in current_map[node].connected_sectors:
+                # If child node is in visited then a node closer to the start is already connected
+                # Checking if in nodes_reached is an optimization step to avoid repeatedly overwriting and adding the same node to the queue
+                if not connected_node in visited and not connected_node in nodes_reached:
+
+                    previous_node[connected_node] = node
+
+                    if connected_node == end:
+                        queue.clear()
+                        break
+                    else:
+                        nodes_reached.add(connected_node)
+                        queue.append(connected_node)
+
+        connected_node = end
+
+        path = collections.deque([])
+
+        try:
+            while connected_node != start:
+                path.appendleft(connected_node)
+                connected_node = previous_node[connected_node]
+        except KeyError:
+            return []
+
+        return list(path)
+
+    def dijkstra_path(self, start, end, current_map):
+        '''This function is not currently used but it can be optionally enabled from the traverse_map function in the Ship class.'''
+
+        node_cost = dict.fromkeys(current_map, np.inf)
+
+        node_cost[start], destination_cost, predecessor, visited = 0, np.inf, dict(
+        ), set()
+        heap = [(0, start)]
+        heapq.heapify(heap)
+
+        while heap:  # While there are still nodes to visit
+
+            min_node_distance, min_node = heapq.heappop(heap)
+
+            for connected_node, edge_weight in current_map[min_node].connected_sectors.items():
+
+                path_cost = min_node_distance + edge_weight
+                # Don't bother adding nodes to the heap if their cost is greater than the cost to a found destination node
+                if path_cost < node_cost[connected_node] and path_cost < destination_cost:
+
+                    node_cost[connected_node], predecessor[connected_node] = path_cost, min_node
+
+                    if connected_node == end:
+                        # Don't place destination node in the heap
+                        destination_cost = path_cost
+                    elif not connected_node in visited:
+                        heapq.heappush(heap, (path_cost, connected_node))
+            else:
+                visited.add(min_node)
+
+        connected_node = end
+        path = collections.deque([])
+
+        while connected_node != start:
+            try:
+                path.appendleft(connected_node)
+                connected_node = predecessor[connected_node]
+            except KeyError:
+                #print("Path not reachable")
+                break
+
+        if node_cost[end] != np.inf:   # If the endpoint is reachable
+            return list(path)
+        else:
+            return []
 
 
 class Deployable:
@@ -634,7 +727,7 @@ class Pilot:
     def check_input(self, action):
         '''Function is called whenever a player creates a keyboard input while sitting in a sector outside of a planet or port'''
 
-        send_client_message(self.connection, prompt_breaker)
+        message_client(self.connection, prompt_breaker)
 
         if action == "":  # User pressed enter
             pass
@@ -653,8 +746,8 @@ class Pilot:
                 nearby_sectors = " | ".join(
                     [str(element) for element in list(self.ship_sector().connected_sectors.keys())])
 
-                send_client_message(self.connection,
-                                    '[Nearby Warps] : ' + nearby_sectors + '\n')
+                message_client(self.connection,
+                               '[Nearby Warps] : ' + nearby_sectors + '\n')
 
                 dest = None
 
@@ -886,7 +979,7 @@ class Sector:
 
         prompt.append(prompt_breaker)
 
-        send_client_message(player.connection, "\n".join(prompt))
+        message_client(player.connection, "\n".join(prompt))
 
         if process_events:
             # Deal with deployables and enviromental hazards
@@ -962,7 +1055,8 @@ class Sector:
         return planet_list
 
     def sector_events(self, victim, mitigate_fighters):
-        '''Function handles hazardous events'''
+        '''Function handles hazardous events within sector b'''
+
         for deployable in self.deployed_items:
 
             if not victim.deployable_allegiance(deployable):
@@ -1098,8 +1192,8 @@ class TradePort:
 
             client_msg.append('\n'+prompt_breaker)
 
-            send_client_message(player.connection,
-                                "\n".join(client_msg))
+            message_client(player.connection,
+                           "\n".join(client_msg))
 
             client_msg.clear()
 
@@ -1109,8 +1203,8 @@ class TradePort:
             user_selection = get_input(prompt, range(
                 3), True, False, player.connection)
 
-            send_client_message(player.connection,
-                                prompt_breaker + "\n")
+            message_client(player.connection,
+                           prompt_breaker + "\n")
 
             if user_selection == Action.sell.value:
                 buy_bool = False
@@ -1124,11 +1218,12 @@ class TradePort:
             if transaction_requested:
                 self.buy_sell_prompt(buy_bool, player, port_data)
 
-            send_client_message(player.connection,
-                                prompt_breaker + "\n")
+            message_client(player.connection,
+                           prompt_breaker + "\n")
 
     def buy_sell_prompt(self, player_buying_status, player, inventory_df):
-
+        '''Function asks player if they want to buy/sell, displays how much is available per user selection,
+        and then prompts for quantity if trades are possible.'''
         player_ship = player.ship
         conn = player.connection
 
@@ -1172,8 +1267,8 @@ class TradePort:
 
             client_msg.append(f"\n0 Exit Menu\n{prompt_breaker}")
 
-            send_client_message(conn,
-                                "\n".join(client_msg))
+            message_client(conn,
+                           "\n".join(client_msg))
 
             client_msg.clear()
 
@@ -1197,7 +1292,7 @@ class TradePort:
                 purchasable_units = min(
                     cargo_limit, buyer_can_afford, self.inventory[commodity]['Quantity'])
 
-                send_client_message(conn, prompt_breaker)
+                message_client(conn, prompt_breaker)
 
                 while True:  # Prompt user for how much they'd like to trade
                     # Show them how many credits they will gain or lose
@@ -1223,8 +1318,8 @@ class TradePort:
                     quantity, commodity, player, player_buying_status)
 
     def process_transaction(self, quantity, item, player, player_buying):
-        '''Prodeployed_in_sectoreses buy and sell requests from players.
-        Note: You should check if it's poosible to do a trade before calling this function,
+        '''Processes buy and sell requests from players.
+        Note: Check if it's poosible to do a trade before calling this function,
         IE: check if player has enough credits, empty cargo holds. Limit max quantity accordingly.
         Also check if Port has both enough credits and inventory.'''
 
@@ -1290,7 +1385,7 @@ class TradePort:
     def port_trades_available(self):
         '''Return first character of each commodities trade status in alphabetical order.'''
         commodity_statuses = [self.inventory[commodity]["Status"][0]
-                              for commodity in sorted(self.inventory.keys())]
+                              for commodity in sorted(self.inventory)]
 
         return " ".join(commodity_statuses)
 
@@ -1328,7 +1423,7 @@ class TradePort:
             else:
                 prompt = "This port isn't willing to purchase anything at this time."
 
-        send_client_message(conn, prompt)
+        message_client(conn, prompt)
 
         time.sleep(.5)
 
@@ -1351,8 +1446,8 @@ class Game:
 
 
 def join_all_sectors(current_map):
-    '''
-    Use Depth First Search algorithm to ensure all sectors are connected
+    '''Depth First Search algorithm used to find all sectors reachable from sector 1
+    and then link those that are unreachable back into the primary cluster.
     '''
     map_partitions = {}
     visited = set()
@@ -1412,93 +1507,6 @@ def join_all_sectors(current_map):
     return current_map
 
 
-def breadth_first_search(start, end, current_map):
-    '''
-    Use Breadth First Search to find shortest path for when travel cost between nodes are the same
-    Optimal to use this with previous clause if the number of sectors is large
-    '''
-    queue = collections.deque([start])
-    visited, previous_node, nodes_reached = set(), dict(), set()
-
-    while queue:
-
-        node = queue.popleft()
-        visited.add(node)
-
-        for connected_node in current_map[node].connected_sectors:
-            # If child node is in visited then a node closer to the start is already connected
-            # Checking if in nodes_reached is an optimization step to avoid repeatedly overwriting and adding the same node to the queue
-            if not connected_node in visited and not connected_node in nodes_reached:
-
-                previous_node[connected_node] = node
-
-                if connected_node == end:
-                    queue.clear()
-                    break
-                else:
-                    nodes_reached.add(connected_node)
-                    queue.append(connected_node)
-
-    connected_node = end
-
-    path = collections.deque([])
-
-    try:
-        while connected_node != start:
-            path.appendleft(connected_node)
-            connected_node = previous_node[connected_node]
-    except KeyError:
-        return []
-
-    return list(path)
-
-
-def dijkstra_path(start, end, current_map):
-    '''Dijkstra's algorithm used to find shortest fuel cost path. '''
-
-    node_cost = dict.fromkeys(current_map, np.inf)
-
-    node_cost[start], destination_cost, predecessor, visited = 0, np.inf, dict(), set()
-    heap = [(0, start)]
-    heapq.heapify(heap)
-
-    while heap:  # While there are still nodes to visit
-
-        min_node_distance, min_node = heapq.heappop(heap)
-
-        for connected_node, edge_weight in current_map[min_node].connected_sectors.items():
-
-            path_cost = min_node_distance + edge_weight
-            # Don't bother adding nodes to the heap if their cost is greater than the cost to a found destination node
-            if path_cost < node_cost[connected_node] and path_cost < destination_cost:
-
-                node_cost[connected_node], predecessor[connected_node] = path_cost, min_node
-
-                if connected_node == end:
-                    # Don't place destination node in the heap
-                    destination_cost = path_cost
-                elif not connected_node in visited:
-                    heapq.heappush(heap, (path_cost, connected_node))
-        else:
-            visited.add(min_node)
-
-    connected_node = end
-    path = collections.deque([])
-
-    while connected_node != start:
-        try:
-            path.appendleft(connected_node)
-            connected_node = predecessor[connected_node]
-        except KeyError:
-            print("Path not reachable")
-            break
-
-    if node_cost[end] != np.inf:   # If the endpoint is reachable
-        return list(path)
-    else:
-        return []
-
-
 def generate_map(total_sectors=100):
     '''Generates a new map with sectors ranging from 1 upto total_sectors'''
     # Keys will be sector numbers and will hold sector objects
@@ -1523,7 +1531,7 @@ def create_new_ship(new_ship_class, owner, spawn_sector):
 
     ship_name = "Unknown Vessel"
 
-    if new_ship_class == 0:   # Escape Pod for when ships are destroyed
+    if new_ship_class == 0:   # Escape Pod for when ships are destroyed while the owner is still onboard
         total_holds = 10
         warp_cost = 0
         ship_health = 500
@@ -1531,7 +1539,7 @@ def create_new_ship(new_ship_class, owner, spawn_sector):
         warp_drive_available = False
         shields = 3
 
-    elif new_ship_class == 1:  # Default starting ship
+    elif new_ship_class == 1:  # Default starting ship... also given to players after death
         total_holds = 1_000
         warp_cost = 2
         ship_health = 50_000
@@ -1557,6 +1565,7 @@ def default_player_properties():
 
 
 def create_basic_pilot(player_name):
+    '''Returns a Pilot obeject with default properties.'''
 
     deployed_items, corporation, turns_remaining, score, credits, tracked_limpets \
         = default_player_properties()
@@ -1568,21 +1577,21 @@ def create_basic_pilot(player_name):
 
 
 def get_input(prompt, allowed_range, return_number, return_lowered_string, conn):
-
+    '''Tells client that an input is requested. Loops until exit conditions are met'''
     prompt = PROMPT_INPUT + prompt
 
     while True:
 
-        send_client_message(conn, prompt)
+        message_client(conn, prompt)
 
-        user_input = recieve_from_client(conn)
+        user_input = client_response(conn)
 
         if return_number:
 
             try:
                 user_input = int(user_input)
             except ValueError:
-                send_client_message(conn, "Input a number.")
+                message_client(conn, "Input a number.")
                 continue
 
         elif return_lowered_string:
@@ -1591,11 +1600,11 @@ def get_input(prompt, allowed_range, return_number, return_lowered_string, conn)
         if allowed_range == None or user_input in allowed_range:
             return user_input
         else:
-            send_client_message(conn, "Invalid input.")
+            message_client(conn, "Invalid input.")
 
 
-def send_client_message(client, msg):
-    '''There is a try and except clause in the handle_client function to handle socket errors'''
+def message_client(client, msg):
+    '''There is a try and except clause in the handle_client function to handle socket errors and disconnects.'''
 
     message = msg.encode(FORMAT)
     msg_length = len(message)
@@ -1608,8 +1617,8 @@ def send_client_message(client, msg):
     client.send(message)    # Send message
 
 
-def recieve_from_client(client):
-
+def client_response(client):
+    '''Function uses socket module to await response from client.'''
     msg_length = client.recv(HEADER).decode(FORMAT)
 
     if msg_length:
@@ -1626,26 +1635,25 @@ def recieve_from_client(client):
         raise OSError
 
 
-def handle_client(conn):
-    '''Prompt for user name and asssign Pilot object.'''
+def get_login_details(conn):
 
     username_prompt = PROMPT_INPUT + "Enter Username >  "
+    password_prompt = PROMPT_INPUT + "Enter Password >  "
+
     prompt_for_username = True
     account_designated = False
-    closing_connection = False
 
     while prompt_for_username:
 
         try:
-            send_client_message(conn, username_prompt)
-            user_name = recieve_from_client(conn)
+            message_client(conn, username_prompt)
+            user_name = client_response(conn)
         except OSError:
-            conn.close()
-            break
-
+            return False, None
+        # Name isn't currently in use by someone playing right now
         if user_name not in game.active_players:
-
             if user_name in game.saved_players:
+                # Get password
                 pass
             else:
                 pilot = create_basic_pilot(user_name)
@@ -1654,9 +1662,20 @@ def handle_client(conn):
             account_designated = True
             prompt_for_username = False
 
-            break
         else:
-            send_client_message(conn, "Username is currently being used.")
+            message_client(conn, "Username is currently being used.")
+
+    if account_designated:
+        return True, pilot
+
+
+def handle_client(conn):
+    '''Prompt client for user name then asssign a Pilot object then await client input.'''
+
+    account_designated = False
+    closing_connection = False
+
+    account_designated, pilot = get_login_details(conn)
 
     if account_designated:
 
@@ -1706,7 +1725,7 @@ if "__main__" == __name__:
 
         conn, addr = server.accept()                # Waits until a new connection occurs
 
-        thread = threading.Thread(target=handle_client, args=(conn))
+        thread = threading.Thread(target=handle_client, args=(conn,))
 
         thread.start()
 
