@@ -1547,11 +1547,10 @@ class Game:
             return True
         else:
             return False
+   def get_login_details(self, conn):
 
-    def get_login_details(self, conn):
-
-        username_prompt = PROMPT_INPUT + "Enter Username >  "
-        password_prompt = PROMPT_INPUT + "Enter Password >  "
+        username_prompt = "Enter Username >  "
+        password_prompt = "Enter Password >  "
 
         prompt_for_username = True
         account_designated = False
@@ -1561,8 +1560,8 @@ class Game:
             try_differnet_username = False
 
             try:
-                message_client(conn, username_prompt)
-                user_name = client_response(conn)
+                user_name = get_input(
+                    username_prompt, None, False, False, conn)
             except OSError:
                 return False, None
             # Name isn't currently in use by someone playing right now
@@ -1574,7 +1573,7 @@ class Game:
 
                     while True:
                         supplied_password = get_input(
-                            password_prompt, None, None, False, conn)
+                            password_prompt, None, False, False, conn)
 
                         if supplied_password == login_data[1]:
                             pilot = login_data[0]
