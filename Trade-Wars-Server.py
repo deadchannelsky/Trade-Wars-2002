@@ -313,15 +313,20 @@ class Ship:
         if self.owner_in_ship:
 
             if client_available:
-                client_msg.append("Your ship has been destroyed !")
+                client_msg.append("Your ship has been destroyed!")
 
             if self.model == "Escape Pod":
 
-                self.owner.ship = None              # Assert that user no longer has a ship
-                self.owner.timee_of_death = datetime.datetime.now()
                 escape_pod_destroyed = True
-                '''!    !   !   !   !'''
-                # Deny turns for the rest of the day
+                # Assert that user no longer has a ship
+                self.owner.ship = None
+                # Log time of death to prevent re-logging
+                self.owner.time_of_death = datetime.datetime.now()
+
+                if client_available:
+                    client_msg.append(
+                        "\nTry logging back in 4 hours from now.")
+
             else:
                 # Place user in an Escape Pod in a random sector
                 if client_available:
@@ -333,7 +338,8 @@ class Ship:
                     0, self.owner, escape_pod_warp)
 
             if client_available:
-                message_client(conn, "\n".join(client_msg))
+                get_input("\n".join(
+                    client_msg) + "\n\nPress any key to continue.", None, False, False, conn)
 
             if not escape_pod_destroyed:
 
@@ -355,6 +361,8 @@ class Ship:
                 if transaction > 0:
                     destroyer.credits += transaction
                     self.owner.credits -= transaction
+            elif client_available:
+                raise OSError
 
         self.destroyed = True
         self.owner = None
@@ -1608,12 +1616,13 @@ class Game:
 
                                 time_since_death = datetime.datetime.now() - pilot.time_of_death
 
-                                if time_since_death <= minimum_death_time:
+                                if time_since_death < minimum_death_time:
 
-                                    time_till_rebirth = minimum_death_time-time_since_death
+                                    time_till_rebirth = minimum_death_time - time_since_death
+                                    prompt = f"\n Your new body is still being generated. Check back in {time_till_rebirth.hours} hours and {time_till_rebirth.minutes} minutes.\n\nPress any key to continue."
 
-                                    message_client(
-                                        conn, f"\n Your new body is still being generated. Check back in {time_till_rebirth.hours} hours and {time_till_rebirth.minutes} minutes.")
+                                    get_input(prompt, None,
+                                              False, False, conn,)
 
                                     return False, None
 
