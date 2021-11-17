@@ -7,6 +7,9 @@ import pandas as pd
 import heapq
 import threading
 import socket
+import datetime
+
+# import pickle .....   Use for saving games.
 
 prompt_breaker = "=" * 96
 
@@ -23,6 +26,13 @@ for utility in ["Photon Ammo", "Planet Crackers", "Planet Generators", "Cloaking
 
 default_cargo = {'Ore': [], "Organics": [],
                  "Equipment": [], 'Armor': [], "Batteries": []}
+
+instructions = \
+    "\n< M > will prompt you for which sector you wish to travel to.\n\n\
+< M(number) > ex: m100 will plot a path to a given sector and begin warping your ship along the plotted path.\n\n\
+When you enter a sector, if available, pressing 1 or 2 will allow you to enter the selected port.\n\n\
+< U > displays a list of non-hostile deployables in the current sector and on your ship.\n\n\
+< C > displays what's in your cargo holds.\n"
 
 FORMAT = "utf-8"
 HEADER = 64
@@ -167,6 +177,8 @@ class Ship:
 
         message_client(self.owner.connection, prompt_breaker)
 
+        self.owner.reload_sector()
+
     def return_cargo_quantity(self, item):
         '''Returns how much of a given item is held on the ship'''
         return sum([quantity[0] for quantity in self.cargo[item]])
@@ -304,7 +316,9 @@ class Ship:
                 client_msg.append("Your ship has been destroyed !")
 
             if self.model == "Escape Pod":
+
                 self.owner.ship = None              # Assert that user no longer has a ship
+                self.owner.timee_of_death = datetime.datetime.now()
                 escape_pod_destroyed = True
                 '''!    !   !   !   !'''
                 # Deny turns for the rest of the day
@@ -406,12 +420,14 @@ class Ship:
     def item_selection(self):
         '''If the player presses "u", display available deployables and prompt for use.'''
 
+        exit_function = True
         ship_items = self.useable_items
         conn = self.owner.connection
         owned_in_sector = self.ship_sector().deployables_belonging_to_player_count(self.owner)
         client_msg = []
 
         df_data = []
+
         for item, quantity_on_ship in ship_items.items():
             try:
                 df_data.append([item, quantity_on_ship, owned_in_sector[item]])
@@ -434,7 +450,7 @@ class Ship:
 
         if selection == Action.previous_menu.value:
             # 0
-            return
+            exit_function = True
         else:
             # Get the key corresponding to the user selection
             item = utilities_df.at[selection, "Deployable"]
@@ -462,9 +478,9 @@ class Ship:
                             mode_prompt, range(4), True, False, conn)
 
                         if mode == 0:
-                            return
+                            exit_function = True
 
-                if not editing_fighter_mode:
+                if not exit_function and not editing_fighter_mode:
 
                     if available_in_sector > 0 and available_on_ship > 0:
 
@@ -475,7 +491,7 @@ class Ship:
                             prompt, range(3), True, False, conn)
 
                         if retrieve_or_deploy == 0:
-                            return
+                            exit_function = True
                         else:
                             deploying_to_sector = True if retrieve_or_deploy == 2 else False
 
@@ -501,7 +517,7 @@ class Ship:
                 # Utility is consumed upon use
                 available_quantity = available_on_ship
 
-            if available_quantity > 0 or editing_fighter_mode:
+            if not exit_function and available_quantity > 0 or editing_fighter_mode:
 
                 if item in default_deployed.keys():
 
@@ -513,19 +529,22 @@ class Ship:
                         quantity = get_input(prompt, range(
                             available_quantity+1), True, False, conn)
 
-                        if quantity == 0:
-                            return
+                        if quantity != 0:
+                            exit_function = True
 
-                    self.owner.use_item(
-                        item, quantity, deploying_to_sector, not deploying_to_sector, changing_properties=editing_fighter_mode)
+                    if not exit_function:
+                        self.owner.use_item(
+                            item, quantity, deploying_to_sector, not deploying_to_sector, changing_properties=editing_fighter_mode)
 
                 else:
 
                     self.owner.use_item(item, 1, True, False)
-            else:
+            elif not exit_function:
                 message_client(conn,
                                f"\n{item} aren't available with the given selection.\n")
                 time.sleep(1)
+
+        self.owner.reload_sector()
 
     def enable_cloak(self):
         '''Cloak will remain active until user tries to exit the sector
@@ -736,7 +755,7 @@ class Limpet:
 class Pilot:
 
     def __init__(self, name, player_credits,
-                 turns_remaining, score, deployed, corporation, tracked_limpets, new_life, ship=None):
+                 turns_remaining, score, deployed, corporation, tracked_limpets, ship=None):
 
         self.name = name
         self.corporation = corporation
@@ -745,25 +764,19 @@ class Pilot:
         self.score = score
         self.tracked_limpets = tracked_limpets
         self.connection = None
-
+        self.time_of_death = None
         # Dictionary for where deployables placed by player are in the world
         self.deployed = deployed
 
         if ship == None:
 
-            if new_life:
-                # User already has a planet.. start them in Fed Space since they died
-                starting_sector = random.randint(1, 20)
-            else:
-                # New user detected
-                starting_sector = random.randint(40, len(game.chart))
+            # New user detected
+            starting_sector = random.randint(40, game.total_sectors)
 
-                self.ship = create_new_ship(new_ship_class=1, owner=self,
-                                            spawn_sector=starting_sector)
+            self.ship = create_new_ship(new_ship_class=1, owner=self,
+                                        spawn_sector=starting_sector)
 
-                self.create_home_world()
-        else:
-            self.ship = ship
+            self.create_home_world()
 
     def check_input(self, action):
         '''Function is called whenever a player creates a keyboard input while sitting in a sector outside of a planet or port'''
@@ -788,23 +801,27 @@ class Pilot:
                                '[Nearby Warps] : ' + nearby_sectors + '\n')
 
                 dest = None
-
             self.ship.traverse_map(dest)
+
         elif action[0] == "c":
             # User wants to view ship cargo
             self.ship.show_cargo()
-            self.ship_sector().load_sector(self, False, False)
+
         elif action[0] == "u":
             # User wants to view items available for use
             self.ship.item_selection()
-            self.ship_sector().load_sector(self, True, False)
+
         elif action[0] == "a":
             self.choose_target()
+            self.reload_sector()
+
         elif action[0] == "l":
             # land on planet if client presses the letter l l
             pass
         elif action[0] == "?":
-            return_instructions(self.connection)
+            message_client(conn, instructions)
+            self.reload_sector()
+
         elif action[0] == "v":
             # prompt client for if they want to view deployables or known planets
             pass
@@ -973,6 +990,15 @@ class Pilot:
         else:
             message_client(
                 conn, "You don't have any Fighters on board to attack with")
+
+    def reload_sector(self):
+        self.ship_sector().load_sector(self, True, False)
+
+    def new_life(self):
+        starting_sector = random.randint(1, 20)
+        self.ship = create_new_ship(1, self, starting_sector)
+        self.credits += 20_000
+        self.time_of_death = None
 
 
 class NPC:
@@ -1537,23 +1563,22 @@ class Game:
         self.total_sectors = total_sectors
         self.active_players = dict()
 
-    def add_player(self, new_player):
-
-        self.saved_players[new_player.name] = new_player
-
     def player_is_active(self, player_name):
         '''Returns True if the user is currently connected to the server.'''
         if player_name in self.active_players:
             return True
         else:
             return False
-   def get_login_details(self, conn):
+
+    def get_login_details(self, conn):
+        '''Prompts for username and password and assigns a new Pilot object if needed.'''
 
         username_prompt = "Enter Username >  "
         password_prompt = "Enter Password >  "
 
         prompt_for_username = True
         account_designated = False
+        minimum_death_time = datetime.timedelta(hours=5.0)
 
         while prompt_for_username:
 
@@ -1575,17 +1600,37 @@ class Game:
                         supplied_password = get_input(
                             password_prompt, None, False, False, conn)
 
-                        if supplied_password == login_data[1]:
-                            pilot = login_data[0]
+                        if supplied_password == login_data["Password"]:
+
+                            pilot = login_data["Pilot"]
+
+                            if pilot.ship.destroyed == True:
+
+                                time_since_death = datetime.datetime.now() - pilot.time_of_death
+
+                                if time_since_death <= minimum_death_time:
+
+                                    time_till_rebirth = minimum_death_time-time_since_death
+
+                                    message_client(
+                                        conn, f"\n Your new body is still being generated. Check back in {time_till_rebirth.hours} hours and {time_till_rebirth.minutes} minutes.")
+
+                                    return False, None
+
+                                else:
+                                    pilot.new_life()
+
                             account_designated = True
                             prompt_for_username = False
-                            break
+
                         elif supplied_password == "n":
+                            # Create neww charachter
                             break
                         elif supplied_password == "d":
                             try_differnet_username = True
                             break
                         elif supplied_password == "e":
+                            # Exit
                             return False, None
                         else:
                             message_client(
@@ -1594,9 +1639,14 @@ class Game:
                 if try_differnet_username:
                     continue
                 elif not account_designated:
+
                     pilot = self.create_basic_pilot(user_name)
-                    game.saved_players[pilot.name] = (pilot, get_input(
-                        "Enter New Password:\t", None, None, False, conn))
+
+                    login_data = game.saved_players[pilot.name]
+
+                    login_data["Pilot"] = pilot
+                    login_data["Password"] = get_input(
+                        "Enter New Password:\t", None, None, False, conn)
 
                     account_designated = True
                     prompt_for_username = False
@@ -1608,17 +1658,6 @@ class Game:
         if account_designated:
             return True, pilot
 
-    def create_basic_pilot(self, player_name):
-        '''Returns a Pilot obeject with default properties.'''
-
-        deployed_items, corporation, turns_remaining, score, credits, tracked_limpets \
-            = self.default_player_properties()
-
-        user = Pilot(player_name,  credits,
-                     turns_remaining, score, deployed_items, corporation,  tracked_limpets, None)
-
-        return user
-
     def handle_client(self, conn):
         '''Prompt client for user name then asssign a Pilot object then await client input.'''
 
@@ -1629,8 +1668,7 @@ class Game:
 
         if account_designated:
 
-            pilot.connection = conn
-            self.active_players[pilot.name] = conn
+            self.active_players[pilot.name] = pilot.connection = conn
 
             print(f"{pilot.name} has logged in.")
 
@@ -1640,16 +1678,17 @@ class Game:
                 pilot, lessen_fighter_response=False, process_events=True)
 
             while not closing_connection:
+
                 try:
                     player_input = get_input(
                         "Select Action <?> :\t", None, False, True, conn)
-
                     if player_input == "0":
                         closing_connection = True
                     else:
                         pilot.check_input(player_input)
                 except OSError:
                     closing_connection = True
+
             else:
 
                 del self.active_players[pilot.name]
@@ -1659,18 +1698,6 @@ class Game:
                 print(f"{pilot.name} has disconnected.")
 
         conn.close()
-
-    def default_player_properties(self):
-
-        deployed_items = default_deployed.copy()
-
-        corporation = None
-
-        tracked_limpets = []
-
-        turns_remaining, score, credits, = 20_000, 0, 20_000
-
-        return deployed_items, corporation,  turns_remaining, score, credits,  tracked_limpets
 
     def generate_map(self, total_sectors=1000):
         '''Generates a new map with sectors ranging from 1 upto total_sectors'''
@@ -1747,6 +1774,22 @@ class Game:
 
         return current_map
 
+    def create_basic_pilot(self, player_name):
+        '''Returns a Pilot obeject with default properties.'''
+
+        deployed_items = default_deployed.copy()
+
+        corporation = None
+
+        tracked_limpets = []
+
+        turns_remaining, score, credits, = 20_000, 0, 20_000
+
+        user = Pilot(player_name,  credits,
+                     turns_remaining, score, deployed_items, corporation,  tracked_limpets, None)
+
+        return user
+
 
 def create_new_ship(new_ship_class, owner, spawn_sector):
     '''Returns a new Ship object'''
@@ -1775,19 +1818,6 @@ def create_new_ship(new_ship_class, owner, spawn_sector):
 
     return Ship(total_holds, warp_cost, cargo, attached_limpets, items, model,
                 spawn_sector, ship_name, False, ship_health, True,  warp_drive_available, shields, owner)
-
-
-def return_instructions(client):
-    '''Function is called when clients respoond with a ?'''
-
-    instructions = \
-        "< M > will prompt you for which sector you wish to travel to.\n\n\
-    < M(number) > ex: m100 will plot a path to a given sector and begin warping your ship along the plotted path.\n\n\
-    When you enter a sector, if available, pressing 1 or 2 will allow you to enter the selected port.\n\n\
-    < U > displays a list of non-hostile deployables in the current sector and on your ship.\n\n\
-    < C > displays what's in your cargo holds."
-
-    message_client(client, instructions)
 
 
 def get_input(prompt, allowed_range, return_number, return_lowered_string, conn):
