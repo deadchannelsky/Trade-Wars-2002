@@ -82,6 +82,7 @@ class Ship:
         self.health = health
         self.owner_in_ship = owner_in_ship    # Pilots can own multiple ships
         self.owner = owner
+
         # Allow Pilots to warp between sectors at a reduced turn rate if they have a feighter stationed there
         self.warp_drive_available = warp_drive_available
         self.destroyed = False
@@ -791,7 +792,9 @@ class Pilot:
 
         message_client(self.connection, prompt_breaker)
 
-        if action[0] == 'm':
+        if action == "":
+            pass
+        elif action[0] == 'm':
             # Pilot wants to move sectors
             if len(action) > 1:
                 # Possibly more input after the letter m
@@ -1005,7 +1008,7 @@ class Pilot:
     def new_life(self):
         starting_sector = random.randint(1, 20)
         self.ship = create_new_ship(1, self, starting_sector)
-        self.credits += 20_000
+        self.credits = max(20_000, self.credits)
         self.time_of_death = None
 
 
@@ -1581,8 +1584,8 @@ class Game:
     def get_login_details(self, conn):
         '''Prompts for username and password and assigns a new Pilot object if needed.'''
 
-        username_prompt = "Enter Username >  "
-        password_prompt = "Enter Password >  "
+        username_prompt = "\nEnter Username >  "
+        password_prompt = "\nEnter Password >  "
 
         prompt_for_username = True
         account_designated = False
@@ -1651,11 +1654,13 @@ class Game:
 
                     pilot = self.create_basic_pilot(user_name)
 
-                    login_data = game.saved_players[pilot.name]
+                    login_data = {}
 
                     login_data["Pilot"] = pilot
                     login_data["Password"] = get_input(
                         "Enter New Password:\t", None, None, False, conn)
+
+                    game.saved_players[pilot.name] = login_data
 
                     account_designated = True
                     prompt_for_username = False
