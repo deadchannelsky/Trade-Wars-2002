@@ -5,10 +5,7 @@ import time
 import collections
 import pandas as pd
 import heapq
-import threading
-import socket
 import datetime
-import argparse
 
 # import pickle .....   Use for saving games.
 
@@ -38,11 +35,6 @@ When you enter a sector, if available, pressing 1 or 2 will allow you to enter t
 < C > displays what's in your cargo holds.\n\n\n\
 Press any key to continue"
 
-FORMAT = "utf-8"
-HEADER = 64
-DISCONNECT_MESSAGE = "!DISCONNECT"
-PROMPT_INPUT = "!INPUT"
-DOOR_MODE = False
 
 
 class Action(Enum):
@@ -56,16 +48,6 @@ class FighterModes(Enum):
     defensive = 2
     taxing = 3
     disabled = 4
-
-
-class LocalNetwork:
-
-    def __init__(self):
-        self.port = 5050
-        self.server_ip = socket.gethostbyname(socket.gethostname())
-        self.addr = (self.server_ip, self.port)
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind(self.addr)
 
 
 class Game:
@@ -83,7 +65,7 @@ class Game:
             self.chart = chart
 
         self.total_sectors = total_sectors
-        # Dictionary keys are player names , value is their socket object
+        # Dictionary keys are player names, value is a connection object
         self.active_players = dict()
 
     def create_basic_pilot(self, player_name):
@@ -194,9 +176,8 @@ class Game:
             return pilot
 
     def handle_client(self, conn=None):
-        '''Prompt client for user name and password and assign a Pilot object then await client input.
-        If *conn* is ``None`` gameplay will use the local terminal for input and
-        output.'''
+        '''Run the game loop for a single player. Networking is disabled so
+        *conn* is ignored.'''
 
         closing_connection = False
 
@@ -204,16 +185,12 @@ class Game:
 
         if isinstance(pilot, Pilot):
 
-            # Register the player and associate the connection if available.
-            pilot.connection = conn
-            if conn is None:
-                self.active_players[pilot.name] = None
-            else:
-                self.active_players[pilot.name] = conn
+            pilot.connection = None
+            self.active_players[pilot.name] = None
 
             print(f"{pilot.name} has logged in.")
 
-            message_client(conn, prompt_breaker+'\n')
+            message_client(None, prompt_breaker+'\n')
 
             if pilot.ship.docked_planet == None:
                 # Start the player within the sector.
@@ -227,7 +204,7 @@ class Game:
                 # Loop until the client disconnects or closes client script
                 try:
                     player_input = get_input(
-                        "Select Action <?> :\t", None, False, True, conn)
+                        "Select Action <?> :\t", None, False, True, None)
                     if player_input == "0":
                         closing_connection = True
                     else:
@@ -239,9 +216,6 @@ class Game:
                 del self.active_players[pilot.name]
                 pilot.connection = None
                 print(f"{pilot.name} has disconnected.")
-
-        if conn is not None:
-            conn.close()
 
     def is_player_active(self, player_name):
         '''Returns True if the user is currently connected to the server.'''
@@ -2162,12 +2136,8 @@ def create_new_ship(new_ship_class, owner, spawn_sector):
 
 
 def get_input(prompt, allowed_range, return_number, return_lowered_string, conn):
-    '''Request input from the player. When *conn* is ``None`` the prompt and
-    response are handled through the local terminal.'''
-    if DOOR_MODE or conn is None:
-        prompt_to_send = prompt
-    else:
-        prompt_to_send = PROMPT_INPUT + prompt
+    '''Request input from the player. Networking is disabled so *conn* is ignored.'''
+    prompt_to_send = prompt
 
     while True:
 
@@ -2193,76 +2163,22 @@ def get_input(prompt, allowed_range, return_number, return_lowered_string, conn)
 
 
 def message_client(client, msg):
-    '''Send *msg* to the connected client or print to the terminal when
-    operating without a network connection.'''
-
-    if DOOR_MODE or client is None:
-        print(msg)
-        return
-
-    message = msg.encode(FORMAT)
-    msg_length = len(message)
-    send_length = str(msg_length).encode(FORMAT)
-    # Pad len(message) so that it is as long as the header
-    send_length += b" " * (HEADER-len(send_length))
-
-    client.send(send_length)  # Tell client how large the message will be
-
-    client.send(message)    # Send message
+    '''Send *msg* to the player. Networking is disabled so *client* is ignored.'''
+    print(msg)
 
 
 def client_response(client):
-    '''Await a response from ``client``. When *client* is ``None`` or the game
-    is running in door mode input is read from ``stdin``.'''
-    if DOOR_MODE or client is None:
-        try:
-            return input()
-        except EOFError:
-            raise OSError
-
-    # get a buffered string that has the length of the next message at the start
-    msg_length = client.recv(HEADER).decode(FORMAT)
-
-    if msg_length:
-
-        msg_length = int(msg_length)
-
-        msg = client.recv(msg_length).decode(FORMAT)
-
-        if msg == DISCONNECT_MESSAGE:
-            raise OSError  # Ensure that clients disconnect cleanly via error handling in Game.handle_client()
-        else:
-            return msg
-    else:
+    '''Await a response from the player. Networking is disabled so *client* is ignored.'''
+    try:
+        return input()
+    except EOFError:
         raise OSError
 
 
 if "__main__" == __name__:
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--door", action="store_true",
-                        help="Run game in door mode using stdin/stdout")
-    args = parser.parse_args()
-
-    if args.door:
-        DOOR_MODE = True
-
     total_sectors = 1_000
 
     game = Game(total_sectors, chart=None, saved_players=None)
 
-    if DOOR_MODE:
-        game.handle_client(None)
-    else:
-        local_network = LocalNetwork()
-        server = local_network.server
-        server.listen()  # server now listening for connections
-        print(f"Server is listening on {local_network.server_ip}")
-
-        while True:
-            # Code waits until a new connection is received
-            conn, addr = server.accept()
-
-            thread = threading.Thread(target=game.handle_client, args=(conn,))
-            thread.start()
-            print(f"Active connections {threading.active_count()-1}")
+    game.handle_client(None)
