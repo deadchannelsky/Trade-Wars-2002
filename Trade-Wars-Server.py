@@ -193,8 +193,10 @@ class Game:
         if account_designated:
             return pilot
 
-    def handle_client(self, conn):
-        '''Prompt client for user name and password and asssign a Pilot object then await client input.'''
+    def handle_client(self, conn=None):
+        '''Prompt client for user name and password and assign a Pilot object then await client input.
+        If *conn* is ``None`` gameplay will use the local terminal for input and
+        output.'''
 
         closing_connection = False
 
@@ -202,11 +204,12 @@ class Game:
 
         if isinstance(pilot, Pilot):
 
-            if DOOR_MODE:
-                pilot.connection = None
+            # Register the player and associate the connection if available.
+            pilot.connection = conn
+            if conn is None:
                 self.active_players[pilot.name] = None
             else:
-                self.active_players[pilot.name] = pilot.connection = conn
+                self.active_players[pilot.name] = conn
 
             print(f"{pilot.name} has logged in.")
 
@@ -2159,8 +2162,9 @@ def create_new_ship(new_ship_class, owner, spawn_sector):
 
 
 def get_input(prompt, allowed_range, return_number, return_lowered_string, conn):
-    '''Tells client that an input is requested. Loops until exit conditions are met'''
-    if DOOR_MODE:
+    '''Request input from the player. When *conn* is ``None`` the prompt and
+    response are handled through the local terminal.'''
+    if DOOR_MODE or conn is None:
         prompt_to_send = prompt
     else:
         prompt_to_send = PROMPT_INPUT + prompt
@@ -2189,9 +2193,10 @@ def get_input(prompt, allowed_range, return_number, return_lowered_string, conn)
 
 
 def message_client(client, msg):
-    '''There is a try and except clause in the handle_client function to handle socket errors and disconnects.'''
+    '''Send *msg* to the connected client or print to the terminal when
+    operating without a network connection.'''
 
-    if DOOR_MODE:
+    if DOOR_MODE or client is None:
         print(msg)
         return
 
@@ -2207,8 +2212,9 @@ def message_client(client, msg):
 
 
 def client_response(client):
-    '''Function uses socket module to await response from client.'''
-    if DOOR_MODE:
+    '''Await a response from ``client``. When *client* is ``None`` or the game
+    is running in door mode input is read from ``stdin``.'''
+    if DOOR_MODE or client is None:
         try:
             return input()
         except EOFError:
