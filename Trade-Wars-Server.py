@@ -8,6 +8,7 @@ import heapq
 import threading
 import socket
 import datetime
+import argparse
 
 # import pickle .....   Use for saving games.
 
@@ -41,6 +42,7 @@ FORMAT = "utf-8"
 HEADER = 64
 DISCONNECT_MESSAGE = "!DISCONNECT"
 PROMPT_INPUT = "!INPUT"
+DOOR_MODE = False
 
 
 class Action(Enum):
@@ -200,7 +202,11 @@ class Game:
 
         if isinstance(pilot, Pilot):
 
-            self.active_players[pilot.name] = pilot.connection = conn
+            if DOOR_MODE:
+                pilot.connection = None
+                self.active_players[pilot.name] = None
+            else:
+                self.active_players[pilot.name] = pilot.connection = conn
 
             print(f"{pilot.name} has logged in.")
 
@@ -231,7 +237,8 @@ class Game:
                 pilot.connection = None
                 print(f"{pilot.name} has disconnected.")
 
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     def is_player_active(self, player_name):
         '''Returns True if the user is currently connected to the server.'''
@@ -2153,11 +2160,14 @@ def create_new_ship(new_ship_class, owner, spawn_sector):
 
 def get_input(prompt, allowed_range, return_number, return_lowered_string, conn):
     '''Tells client that an input is requested. Loops until exit conditions are met'''
-    prompt = PROMPT_INPUT + prompt
+    if DOOR_MODE:
+        prompt_to_send = prompt
+    else:
+        prompt_to_send = PROMPT_INPUT + prompt
 
     while True:
 
-        message_client(conn, prompt)
+        message_client(conn, prompt_to_send)
 
         user_input = client_response(conn)
 
@@ -2181,6 +2191,10 @@ def get_input(prompt, allowed_range, return_number, return_lowered_string, conn)
 def message_client(client, msg):
     '''There is a try and except clause in the handle_client function to handle socket errors and disconnects.'''
 
+    if DOOR_MODE:
+        print(msg)
+        return
+
     message = msg.encode(FORMAT)
     msg_length = len(message)
     send_length = str(msg_length).encode(FORMAT)
@@ -2194,6 +2208,12 @@ def message_client(client, msg):
 
 def client_response(client):
     '''Function uses socket module to await response from client.'''
+    if DOOR_MODE:
+        try:
+            return input()
+        except EOFError:
+            raise OSError
+
     # get a buffered string that has the length of the next message at the start
     msg_length = client.recv(HEADER).decode(FORMAT)
 
@@ -2213,20 +2233,30 @@ def client_response(client):
 
 if "__main__" == __name__:
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--door", action="store_true",
+                        help="Run game in door mode using stdin/stdout")
+    args = parser.parse_args()
+
+    if args.door:
+        DOOR_MODE = True
+
     total_sectors = 1_000
 
     game = Game(total_sectors, chart=None, saved_players=None)
 
-    local_network = LocalNetwork()
-    server = local_network.server
-    server.listen()  # server now listening for connections
-    print(f"Server is listening on {local_network.server_ip}")
+    if DOOR_MODE:
+        game.handle_client(None)
+    else:
+        local_network = LocalNetwork()
+        server = local_network.server
+        server.listen()  # server now listening for connections
+        print(f"Server is listening on {local_network.server_ip}")
 
-    while True:
-        # Code waits until a new connection is received
-        conn, addr = server.accept()
+        while True:
+            # Code waits until a new connection is received
+            conn, addr = server.accept()
 
-        # handle_client(conn)
-        thread = threading.Thread(target=game.handle_client, args=(conn,))
-        thread.start()
-        print(f"Active connections {threading.active_count()-1}")
+            thread = threading.Thread(target=game.handle_client, args=(conn,))
+            thread.start()
+            print(f"Active connections {threading.active_count()-1}")
